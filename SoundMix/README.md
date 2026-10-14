@@ -36,7 +36,7 @@ manager, no network access.
 | **Input channels** | hard minimum of 16 | whatever the chosen layout needs (4 for 2.1, 16 for 9.1.6) |
 | **Output channels** | exactly 2, plus a hard-coded quirk list (`fosi`, `ds2`, `cs43131`) | any device with ≥ 2 outputs |
 | **LFE filter** | fixed 125 Hz, 4th-order Butterworth | mode, cut-off and slope all adjustable |
-| **Offline rendering** | none — live device only | drag in a multichannel file, render to stereo at ~127× real time |
+| **Offline rendering** | none — live device only | internal testing only |
 | **Earphone correction** | PEQ text only | pair a measured response with each EQ profile; plot measured, EQ and corrected together |
 | **Tests** | none shipped | **256** automated checks, including real file renders |
 
@@ -90,15 +90,7 @@ because every height shared the same coefficient.
 
 ## Offline rendering
 
-The **File** panel folds a multichannel file to stereo with no audio interface involved,
-through the identical chain the live path uses — same matrix, LFE filter, EQ, headroom
-trim and limiter. Drop a file in, or choose one; the layout is inferred from its channel
-count and can be overridden. Output is WAV at the source sample rate, 16/24-bit or
-32-bit float.
-
-It reports what actually happened: peak per channel, how much the limiter had to pull,
-how many samples reached full scale, and the render speed. On this machine a 16-channel
-48 kHz file renders at about 127× real time.
+The **File** panel has been removed as of 2026-10-14. Offline file rendering is no longer supported through the main UI. The internal `OfflineRenderer` class remains in the codebase for automated testing purposes.
 
 ## Earphone correction
 
@@ -171,7 +163,7 @@ UI library — and every colour comes from a named token in `Sources/SoundMixApp
 ## Reliability fixes (2026-10-14)
 
 - File exports reject the source itself, symbolic links, and hard links. Completed
-  renders replace the destination atomically; failed or cancelled renders preserve it.
+  renders replace the destination atomically; failed or cancelled renders preserve it. (Note: File exports are now restricted to automated testing).
 - Read and write failures propagate. Tail frames are written in bounded blocks and
   included in peak, clipping, and limiter statistics.
 - Limiter interpolation uses separate left/right histories, linked gain, and a
