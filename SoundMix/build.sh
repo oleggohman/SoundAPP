@@ -25,6 +25,7 @@ swiftc -O -swift-version 5 -module-cache-path "$MODCACHE" \
     Tools/BedGenerator/main.swift -o "$BUILD_DIR/bedgen"
 
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/Help.md "$APP/Contents/Resources/Help.md"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 echo "==> Signing (ad-hoc)"

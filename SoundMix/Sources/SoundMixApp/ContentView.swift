@@ -6,6 +6,7 @@ enum Panel: String, CaseIterable, Identifiable {
     case outputEQ = "Output EQ"
     case monitor = "Monitor"
     case log = "Log"
+    case help = "Help"
 
     var id: String { rawValue }
     var icon: String {
@@ -15,6 +16,7 @@ enum Panel: String, CaseIterable, Identifiable {
         case .outputEQ: return "slider.horizontal.3"
         case .monitor:  return "chart.bar.fill"
         case .log:      return "text.alignleft"
+        case .help:     return "questionmark.circle"
         }
     }
 }
@@ -48,6 +50,7 @@ struct ContentView: View {
                     case .outputEQ: OutputEQPanel()
                     case .monitor:  MonitorPanel()
                     case .log:      LogPanel()
+                    case .help:     HelpPanel()
                     }
                 }
                 .padding(.horizontal, CZ.Spacing.xxl)
@@ -85,6 +88,7 @@ struct ContentView: View {
         case .outputEQ: return "Parametric correction, in the same REW / Equalizer APO format you already use."
         case .monitor:  return "Per-channel bed activity, output level, and what the limiter is doing."
         case .log:      return "What the engine did, in order."
+        case .help:     return "Documentation and terminology."
         }
     }
 }
