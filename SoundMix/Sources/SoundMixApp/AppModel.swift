@@ -66,15 +66,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // Offline file rendering
-    @Published var sourceInfo: OfflineRenderer.SourceInfo?
-    @Published var fileLayoutName: String?
-    @Published var outputBitDepth: Int = 24
-    @Published var renderProgress: Double?
-    @Published var renderResult: OfflineRenderer.Result?
-    @Published var renderError: String?
-    private var activeRenderer: OfflineRenderer?
-
     // Engine options
     @Published var framesPerBuffer: Int = 128
     @Published var safetyBufferText: String = "20"
@@ -513,120 +504,6 @@ final class AppModel: ObservableObject {
             || p.measurementLeft != measurementLeft
             || p.measurementRight != measurementRight
             || p.target != target
-    }
-
-    // MARK: Offline file rendering
-
-    /// The layout used for a file render — the file's own suggestion unless
-    /// it has been overridden.
-    var fileLayout: LayoutPreset {
-        if let name = fileLayoutName, let l = LayoutPreset.all.first(where: { $0.name == name }) {
-            return l
-        }
-        return sourceInfo?.suggestedLayout ?? .nativeBed
-    }
-
-    var isRendering: Bool { renderProgress != nil }
-
-    var fileRenderBlockedReason: String? {
-        guard let info = sourceInfo else { return "Choose a multichannel file." }
-        let needed = fileLayout.requiredInputChannels
-        if info.channels < needed {
-            return "The file has \(info.channels) channel\(info.channels == 1 ? "" : "s"); \(fileLayout.name) needs \(needed)."
-        }
-        return nil
-    }
-
-    func chooseSourceFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowsOtherFileTypes = true
-        panel.message = "Choose a multichannel audio file to fold down to stereo."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        adoptSourceFile(url)
-    }
-
-    func adoptSourceFile(_ url: URL) {
-        renderResult = nil
-        renderError = nil
-        do {
-            let info = try OfflineRenderer.inspect(url)
-            sourceInfo = info
-            fileLayoutName = info.suggestedLayout?.name
-            append(String(format: "Opened “%@” — %d ch, %.0f Hz, %.1f s.",
-                          url.lastPathComponent, info.channels, info.sampleRate, info.duration))
-        } catch {
-            sourceInfo = nil
-            renderError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    /// Where the stereo file goes: alongside the source, clearly named.
-    func suggestedOutputURL(for info: OfflineRenderer.SourceInfo) -> URL {
-        let base = info.url.deletingPathExtension().lastPathComponent
-        return info.url.deletingLastPathComponent()
-            .appendingPathComponent("\(base) (stereo).wav")
-    }
-
-    func renderFile() {
-        guard let info = sourceInfo, fileRenderBlockedReason == nil else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = suggestedOutputURL(for: info).lastPathComponent
-        panel.allowsOtherFileTypes = true
-        panel.canCreateDirectories = true
-        panel.message = "Where should the stereo render go?"
-        guard panel.runModal() == .OK, let out = panel.url else { return }
-
-        // The file render uses the same configuration as live playback, with
-        // the layout the file itself calls for.
-        var cfg = configuration
-        cfg.layout = fileLayout
-
-        let renderer = OfflineRenderer()
-        activeRenderer = renderer
-        renderProgress = 0
-        renderResult = nil
-        renderError = nil
-        let depth = outputBitDepth
-        let source = info.url
-        append("Rendering “\(source.lastPathComponent)” → “\(out.lastPathComponent)”…")
-
-        Task.detached(priority: .userInitiated) {
-            do {
-                let result = try renderer.render(input: source, output: out,
-                                                 configuration: cfg, bitDepth: depth) { p in
-                    Task { @MainActor in self.renderProgress = p }
-                }
-                await MainActor.run {
-                    self.renderProgress = nil
-                    self.renderResult = result
-                    self.activeRenderer = nil
-                    self.append(String(format: "Rendered %.1f s in %.2f s (%.0f× real time) · peak %.1f / %.1f dBFS · limiter %.1f dB · %d clipped",
-                                       result.duration, result.renderTime, result.speedFactor,
-                                       result.peakLeftDB, result.peakRightDB,
-                                       result.maxGainReductionDB, result.clippedSamples))
-                }
-            } catch {
-                await MainActor.run {
-                    self.renderProgress = nil
-                    self.activeRenderer = nil
-                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                    self.renderError = message
-                    self.append("Render failed: \(message)")
-                }
-            }
-        }
-    }
-
-    func cancelRender() {
-        activeRenderer?.cancel()
-        append("Cancelling render…")
-    }
-
-    func revealRenderResult() {
-        guard let r = renderResult else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([r.outputURL])
     }
 
     // MARK: Earphone measurement

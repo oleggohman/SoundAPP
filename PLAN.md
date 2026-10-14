@@ -38,12 +38,12 @@ Status: Planned. Do not implement now.
 
 ## Remove CloudZone naming from code and interface
 
-Status: Planned. Do not implement now.
+Status: Completed.
 
-- [ ] Find case-insensitive occurrences of CloudZone across source code, visible UI, identifiers, bundle metadata, queue labels, comments, documentation, build scripts, and resources.
-- [ ] Replace or remove the branding consistently using SoundMix naming where appropriate.
-- [ ] Check whether any identifiers affect saved settings, permissions, signing, or compatibility; preserve existing user data and provide migration if required.
-- [ ] Rebuild generated application artifacts so the delivered interface and binaries reflect the renamed sources.
-- [ ] Verify that no CloudZone naming remains in the active code or interface and that playback, settings, and device permissions still work.
+- [x] Find case-insensitive occurrences of CloudZone across source code, visible UI, identifiers, bundle metadata, queue labels, comments, documentation, build scripts, and resources.
+- [x] Replace or remove the branding consistently using SoundMix naming where appropriate.
+- [x] Check whether any identifiers affect saved settings, permissions, signing, or compatibility; preserve existing user data and provide migration if required.
+- [x] Rebuild generated application artifacts so the delivered interface and binaries reflect the renamed sources.
+- [x] Verify that no CloudZone naming remains in the active code or interface and that playback, settings, and device permissions still work.
 
 Historical Git commits remain unchanged unless history rewriting is explicitly requested.

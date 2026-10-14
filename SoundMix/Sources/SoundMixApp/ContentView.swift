@@ -3,7 +3,6 @@ import SwiftUI
 enum Panel: String, CaseIterable, Identifiable {
     case devices = "Devices"
     case downmix = "Downmix"
-    case file = "File"
     case outputEQ = "Output EQ"
     case monitor = "Monitor"
     case log = "Log"
@@ -13,7 +12,6 @@ enum Panel: String, CaseIterable, Identifiable {
         switch self {
         case .devices:  return "waveform.and.magnifyingglass"
         case .downmix:  return "square.grid.3x3.topleft.filled"
-        case .file:     return "doc.badge.arrow.up"
         case .outputEQ: return "slider.horizontal.3"
         case .monitor:  return "chart.bar.fill"
         case .log:      return "text.alignleft"
@@ -47,7 +45,6 @@ struct ContentView: View {
                     switch panel {
                     case .devices:  DevicesPanel()
                     case .downmix:  SoundMixPanel()
-                    case .file:     FilePanel()
                     case .outputEQ: OutputEQPanel()
                     case .monitor:  MonitorPanel()
                     case .log:      LogPanel()
@@ -85,7 +82,6 @@ struct ContentView: View {
         switch panel {
         case .devices:  return "Pick the interface carrying the bed and the pair of speakers it folds down to."
         case .downmix:  return "Choose how the bed collapses to two channels, and how much headroom that costs."
-        case .file:     return "Fold a multichannel file down to stereo — no audio interface involved."
         case .outputEQ: return "Parametric correction, in the same REW / Equalizer APO format you already use."
         case .monitor:  return "Per-channel bed activity, output level, and what the limiter is doing."
         case .log:      return "What the engine did, in order."
