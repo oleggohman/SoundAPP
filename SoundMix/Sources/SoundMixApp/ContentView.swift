@@ -288,14 +288,13 @@ private struct MiniMeters: View {
             .frame(width: 280)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Limiter").font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
-                Text(model.snapshot.gainReductionDB > 0.05
-                     ? String(format: "−%.1f dB", model.snapshot.gainReductionDB)
-                     : "—")
+                Text("Stereo limiter").font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
+                Text(model.limiterStatus)
                     .font(CZ.Typography.mono(13))
                     .foregroundStyle(model.snapshot.gainReductionDB > 0.05 ? CZ.Color.orange : CZ.Color.lightGray)
             }
-            .frame(width: 72, alignment: .leading)
+            .frame(width: 112, alignment: .leading)
+            .help("One linked limiter protects both outputs. Ready means no gain reduction; it does not raise quiet audio.")
         }
     }
 }

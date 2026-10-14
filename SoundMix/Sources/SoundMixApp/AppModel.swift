@@ -176,6 +176,27 @@ final class AppModel: ObservableObject {
                 enabled: limiterEnabled))
     }
 
+    var limiterStatus: String {
+        guard state.isRunning else { return "Stopped" }
+        guard engine.processor.configuration.limiter.enabled else { return "Off" }
+        return snapshot.gainReductionDB > 0.05
+            ? String(format: "−%.1f dB", snapshot.gainReductionDB) : "Ready · 0 dB"
+    }
+
+    var gainBreakdown: String {
+        let cfg = configuration
+        return String(format: "Matrix trim %+.1f dB · manual %+.1f dB · global EQ preamp %+.1f dB · speaker preamps L %+.1f / R %+.1f dB. EQ filters add their own frequency-dependent boosts and cuts.",
+                      cfg.automaticTrimDB, cfg.manualGainDB, cfg.globalPEQ.preampDB,
+                      cfg.speakerPEQLeft.preampDB, cfg.speakerPEQRight.preampDB)
+    }
+
+    func adjustManualGain(by delta: Double) {
+        let value = Double(manualGainText) ?? 0
+        guard value.isFinite else { return }
+        manualGainText = String(format: "%.1f", min(24, max(-60, value + delta)))
+        applyLive()
+    }
+
     var engineOptions: SoundMixEngine.Options {
         .init(framesPerBuffer: framesPerBuffer,
               safetyBufferMS: Double(safetyBufferText) ?? 20)
@@ -389,19 +410,24 @@ final class AppModel: ObservableObject {
     }
 
     func newProfile() {
-        let name = uniqueNewName()
-        let p = library.save(EQProfile(name: name,
-                                       globalText: globalPEQText,
-                                       speakerText: speakerPEQText,
-                                       measurementLeft: measurementLeft,
-                                       measurementRight: measurementRight,
-                                       target: target))
-        refreshProfiles()
-        selectedProfileID = p.id
-        profileNameDraft = p.name
-        profileNotesDraft = p.notes
-        profileDirty = false
-        append("Created EQ profile “\(name)”.")
+        do {
+            let name = uniqueNewName()
+            let p = try library.save(EQProfile(name: name,
+                                           globalText: globalPEQText,
+                                           speakerText: speakerPEQText,
+                                           measurementLeft: measurementLeft,
+                                           measurementRight: measurementRight,
+                                           target: target))
+            refreshProfiles()
+            selectedProfileID = p.id
+            profileNameDraft = p.name
+            profileNotesDraft = p.notes
+            profileDirty = false
+            append("Created EQ profile “\(name)”.")
+        } catch {
+            errorMessage = error.localizedDescription
+            append("EQ profile operation failed: \(error.localizedDescription)")
+        }
     }
 
     private func uniqueNewName() -> String {
@@ -413,51 +439,71 @@ final class AppModel: ObservableObject {
     }
 
     func saveSelectedProfile() {
-        guard var p = selectedProfile else { newProfile(); return }
-        p.name = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? p.name : profileNameDraft
-        p.notes = profileNotesDraft
-        p.globalText = globalPEQText
-        p.speakerText = speakerPEQText
-        p.measurementLeft = measurementLeft
-        p.measurementRight = measurementRight
-        p.target = target
-        let saved = library.save(p)
-        refreshProfiles()
-        selectedProfileID = saved.id
-        profileDirty = false
-        append("Saved EQ profile “\(saved.name)”.")
+        do {
+            guard var p = selectedProfile else { newProfile(); return }
+            p.name = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? p.name : profileNameDraft
+            p.notes = profileNotesDraft
+            p.globalText = globalPEQText
+            p.speakerText = speakerPEQText
+            p.measurementLeft = measurementLeft
+            p.measurementRight = measurementRight
+            p.target = target
+            let saved = try library.save(p)
+            refreshProfiles()
+            selectedProfileID = saved.id
+            profileDirty = false
+            append("Saved EQ profile “\(saved.name)”.")
+        } catch {
+            errorMessage = error.localizedDescription
+            append("EQ profile operation failed: \(error.localizedDescription)")
+        }
     }
 
     func duplicateSelectedProfile() {
-        guard let p = selectedProfile else { return }
-        let copy = library.duplicate(p)
-        refreshProfiles()
-        selectedProfileID = copy.id
-        profileNameDraft = copy.name
-        append("Duplicated to “\(copy.name)”.")
+        do {
+            guard let p = selectedProfile else { return }
+            let copy = try library.duplicate(p)
+            refreshProfiles()
+            selectedProfileID = copy.id
+            profileNameDraft = copy.name
+            append("Duplicated to “\(copy.name)”.")
+        } catch {
+            errorMessage = error.localizedDescription
+            append("EQ profile operation failed: \(error.localizedDescription)")
+        }
     }
 
     func deleteSelectedProfile() {
-        guard let p = selectedProfile else { return }
-        library.delete(p)
-        refreshProfiles()
-        selectedProfileID = profiles.first?.id
-        if let next = selectedProfile {
-            profileNameDraft = next.name
-            profileNotesDraft = next.notes
-        } else {
-            profileNameDraft = ""
-            profileNotesDraft = ""
+        do {
+            guard let p = selectedProfile else { return }
+            try library.delete(p)
+            refreshProfiles()
+            selectedProfileID = profiles.first?.id
+            if let next = selectedProfile {
+                profileNameDraft = next.name
+                profileNotesDraft = next.notes
+            } else {
+                profileNameDraft = ""
+                profileNotesDraft = ""
+            }
+            append("Deleted EQ profile “\(p.name)”.")
+        } catch {
+            errorMessage = error.localizedDescription
+            append("EQ profile operation failed: \(error.localizedDescription)")
         }
-        append("Deleted EQ profile “\(p.name)”.")
     }
 
     func importProfile(text: String, name: String, asSpeakerCorrection: Bool) {
-        let p = library.importAPO(text: text, name: name, asSpeakerCorrection: asSpeakerCorrection)
-        refreshProfiles()
-        selectProfile(p)
-        append("Imported “\(name)” as \(asSpeakerCorrection ? "speaker correction" : "global PEQ").")
+        do {
+            let p = try library.importAPO(text: text, name: name, asSpeakerCorrection: asSpeakerCorrection)
+            refreshProfiles()
+            selectProfile(p)
+            append("Imported “\(name)” as \(asSpeakerCorrection ? "speaker correction" : "global PEQ").")
+        } catch {
+            errorMessage = error.localizedDescription
+            append("EQ profile operation failed: \(error.localizedDescription)")
+        }
     }
 
     func markProfileDirty() {

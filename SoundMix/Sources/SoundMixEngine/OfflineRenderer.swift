@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import Synchronization
+import Darwin
 
 /// Folds a multichannel file down to stereo without touching an audio device.
 ///
@@ -32,6 +34,7 @@ public final class OfflineRenderer {
         case tooFewChannels(have: Int, need: Int, layout: String)
         case cannotWrite(URL, String)
         case cancelled
+        case sameFile
 
         public var errorDescription: String? {
             switch self {
@@ -43,6 +46,8 @@ public final class OfflineRenderer {
                 return "The file has \(have) channel\(have == 1 ? "" : "s") but the \(layout) layout needs \(need). Pick a layout that matches the file."
             case .cannotWrite(let url, let why):
                 return "Could not write “\(url.lastPathComponent)”: \(why)"
+            case .sameFile:
+                return "Choose an output file different from the source."
             case .cancelled:
                 return "Render cancelled."
             }
@@ -89,8 +94,8 @@ public final class OfflineRenderer {
                           suggestedLayout: suggested)
     }
 
-    private var cancelled = false
-    public func cancel() { cancelled = true }
+    private let cancelled = Atomic<Bool>(false)
+    public func cancel() { cancelled.store(true, ordering: .releasing) }
 
     /// Render `input` through `configuration` and write stereo to `output`.
     /// `progress` is called on an arbitrary thread with a 0…1 fraction.
@@ -99,9 +104,35 @@ public final class OfflineRenderer {
                        configuration: ProcessorConfiguration,
                        bitDepth: Int = 24,
                        progress: ((Double) -> Void)? = nil) throws -> Result {
-        cancelled = false
-        let started = Date()
+        let sourcePath = input.resolvingSymlinksInPath().standardizedFileURL
+        let outputPath = output.resolvingSymlinksInPath().standardizedFileURL
+        let sourceID = try? input.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let outputID = try? output.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let sameIdentity = (sourceID as? NSObject).map { $0.isEqual(outputID) } ?? false
+        guard sourcePath != outputPath, !sameIdentity else { throw RenderError.sameFile }
+        if cancelled.load(ordering: .acquiring) { throw RenderError.cancelled }
 
+        // Publish only a complete file. Failed/cancelled renders leave an
+        // existing destination intact, and never leave a partial final export.
+        let staging = output.deletingLastPathComponent()
+            .appendingPathComponent(".soundmix-\(UUID().uuidString).\(output.pathExtension.isEmpty ? "wav" : output.pathExtension)")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var result = try renderContents(input: input, output: staging,
+                                        configuration: configuration, bitDepth: bitDepth,
+                                        progress: progress)
+        if cancelled.load(ordering: .acquiring) { throw RenderError.cancelled }
+        guard rename(staging.path, output.path) == 0 else {
+            throw RenderError.cannotWrite(output, String(cString: strerror(errno)))
+        }
+        result.outputURL = output
+        progress?(1)
+        return result
+    }
+
+    private func renderContents(input: URL, output: URL,
+                                configuration: ProcessorConfiguration, bitDepth: Int,
+                                progress: ((Double) -> Void)?) throws -> Result {
+        let started = Date()
         let info = try Self.inspect(input)
         let needed = configuration.layout.requiredInputChannels
         guard info.channels >= needed else {
@@ -160,15 +191,15 @@ public final class OfflineRenderer {
         let total = max(info.frames, 1)
 
         while true {
-            if cancelled { throw RenderError.cancelled }
+            if cancelled.load(ordering: .acquiring) { throw RenderError.cancelled }
             readBuffer.frameLength = 0
             let remaining = file.length - file.framePosition
             if remaining <= 0 { break }
             let want = AVAudioFrameCount(min(Int64(blockFrames), remaining))
             do { try file.read(into: readBuffer, frameCount: want) }
-            catch { break }            // some formats signal EOF by throwing
+            catch { throw RenderError.unreadable(input, error.localizedDescription) } // EOF is checked above.
             let n = Int(readBuffer.frameLength)
-            if n == 0 { break }
+            if n == 0 { throw RenderError.unreadable(input, "unexpected end of audio data") }
 
             // AVAudioFile hands back deinterleaved float; the processor wants
             // the interleaved layout a device would give it.
@@ -202,31 +233,38 @@ public final class OfflineRenderer {
             catch { throw RenderError.cannotWrite(output, error.localizedDescription) }
 
             framesDone += n
-            progress?(min(Double(framesDone) / Double(total), 1))
+            progress?(min(Double(framesDone) / Double(total), 0.99))
         }
 
         // Flush the chain's own latency so the tail is not truncated.
         let tail = Int((processor.latencyMS / 1000 * rate).rounded())
-        if tail > 0 {
-            let silence = [Float](repeating: 0, count: tail * channels)
-            var tailOut = [Float](repeating: 0, count: tail * 2)
-            silence.withUnsafeBufferPointer { inPtr in
-                tailOut.withUnsafeMutableBufferPointer { outPtr in
-                    processor.process(input: inPtr.baseAddress!, inputChannels: channels,
-                                      frames: tail, output: outPtr.baseAddress!)
+        interleaved.withUnsafeMutableBufferPointer { $0.initialize(repeating: 0) }
+        var remainingTail = tail
+        while remainingTail > 0 {
+            if cancelled.load(ordering: .acquiring) { throw RenderError.cancelled }
+            let n = min(remainingTail, blockFrames)
+            interleaved.withUnsafeBufferPointer { input in
+                stereo.withUnsafeMutableBufferPointer { output in
+                    processor.process(input: input.baseAddress!, inputChannels: channels,
+                                      frames: n, output: output.baseAddress!)
                 }
             }
-            writeBuffer.frameLength = AVAudioFrameCount(min(tail, blockFrames))
+            for f in 0..<n {
+                let l = Double(stereo[f * 2]), r = Double(stereo[f * 2 + 1])
+                peakL = max(peakL, abs(l)); peakR = max(peakR, abs(r))
+                if abs(l) >= 0.99999 || abs(r) >= 0.99999 { clipped += 1 }
+            }
+            maxGR = max(maxGR, processor.snapshot().gainReductionDB)
+            writeBuffer.frameLength = AVAudioFrameCount(n)
             if let dst = writeBuffer.floatChannelData {
-                for f in 0..<min(tail, blockFrames) {
-                    dst[0][f] = tailOut[f * 2]; dst[1][f] = tailOut[f * 2 + 1]
-                }
+                for f in 0..<n { dst[0][f] = stereo[f * 2]; dst[1][f] = stereo[f * 2 + 1] }
             }
-            try? outFile.write(from: writeBuffer)
-            framesDone += tail
+            do { try outFile.write(from: writeBuffer) }
+            catch { throw RenderError.cannotWrite(output, error.localizedDescription) }
+            framesDone += n
+            remainingTail -= n
         }
 
-        progress?(1)
         return Result(outputURL: output,
                       frames: framesDone,
                       sampleRate: rate,

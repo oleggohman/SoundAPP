@@ -182,35 +182,36 @@ public final class EQProfileLibrary {
     }
 
     @discardableResult
-    public func save(_ profile: EQProfile) -> EQProfile {
+    public func save(_ profile: EQProfile) throws -> EQProfile {
         var p = profile
         p.modified = Date()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(p) { try? data.write(to: url(for: p)) }
+        let data = try encoder.encode(p)
+        try data.write(to: url(for: p), options: .atomic)
         reload()
         return p
     }
 
-    public func delete(_ profile: EQProfile) {
-        try? FileManager.default.removeItem(at: url(for: profile))
+    public func delete(_ profile: EQProfile) throws {
+        try FileManager.default.removeItem(at: url(for: profile))
         reload()
     }
 
-    public func duplicate(_ profile: EQProfile) -> EQProfile {
+    public func duplicate(_ profile: EQProfile) throws -> EQProfile {
         var copy = profile
         copy.id = UUID()
         copy.name = uniqueName(basedOn: profile.name)
         copy.created = Date()
-        return save(copy)
+        return try save(copy)
     }
 
-    public func rename(_ profile: EQProfile, to newName: String) -> EQProfile {
+    public func rename(_ profile: EQProfile, to newName: String) throws -> EQProfile {
         var p = profile
         p.name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         if p.name.isEmpty { p.name = profile.name }
-        return save(p)
+        return try save(p)
     }
 
     /// A name no existing profile uses, by appending “copy”, “copy 2”, …
@@ -231,12 +232,12 @@ public final class EQProfileLibrary {
 
     /// Import a REW / Equalizer APO text file as a new profile.
     @discardableResult
-    public func importAPO(text: String, name: String, asSpeakerCorrection: Bool) -> EQProfile {
+    public func importAPO(text: String, name: String, asSpeakerCorrection: Bool) throws -> EQProfile {
         let p = EQProfile(name: name,
                           notes: "Imported from a REW / Equalizer APO file.",
                           globalText: asSpeakerCorrection ? "" : text,
                           speakerText: asSpeakerCorrection ? text : "")
-        return save(p)
+        return try save(p)
     }
 
     /// Render a profile back out as REW / Equalizer APO text.
@@ -298,23 +299,23 @@ public final class EQProfileLibrary {
     public func importData(_ data: Data, fallbackName: String,
                            apoAsSpeakerCorrection: Bool = false) throws -> [EQProfile] {
         if let bundle = try? Self.decoder.decode(Bundle.self, from: data), !bundle.profiles.isEmpty {
-            return bundle.profiles.map { adoptAndSave($0) }
+            return try bundle.profiles.map { try adoptAndSave($0) }
         }
         if let single = try? Self.decoder.decode(EQProfile.self, from: data) {
-            return [adoptAndSave(single)]
+            return [try adoptAndSave(single)]
         }
         guard let text = String(data: data, encoding: .utf8) else { throw ImportError.unreadable }
         let parsed = APOParser.parse(text).firstProfile
         guard !parsed.filters.isEmpty || parsed.preampDB != 0 else { throw ImportError.empty }
-        return [importAPO(text: text, name: uniqueImportName(fallbackName),
+        return [try importAPO(text: text, name: uniqueImportName(fallbackName),
                           asSpeakerCorrection: apoAsSpeakerCorrection)]
     }
 
-    private func adoptAndSave(_ profile: EQProfile) -> EQProfile {
+    private func adoptAndSave(_ profile: EQProfile) throws -> EQProfile {
         var p = profile
         p.id = UUID()
         p.name = uniqueImportName(profile.name)
-        return save(p)
+        return try save(p)
     }
 
     /// Keeps the incoming name when it is free, otherwise appends a number.

@@ -96,6 +96,11 @@ public final class BiquadChain {
         self.state = Array(repeating: BiquadState(), count: cascade.sections.count)
     }
 
+    func inheritHistory(from previous: BiquadChain) {
+        guard state.count == previous.state.count else { return }
+        for i in state.indices { state[i] = previous.state[i] }
+    }
+
     /// Replace coefficients. State is preserved where the section count matches
     /// so that live edits do not click.
     public func update(_ newCascade: BiquadCascade) {

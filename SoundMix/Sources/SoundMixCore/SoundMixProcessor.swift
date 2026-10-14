@@ -68,7 +68,7 @@ public struct ProcessorConfiguration: Equatable, Sendable {
 ///                                                                           ▼
 ///              global PEQ (both channels) → swap → speaker PEQ L/R → limiter → out
 /// ```
-public final class SoundMixProcessor: @unchecked Sendable {
+private final class ProcessorRenderState: @unchecked Sendable {
 
     // Audio-thread state -----------------------------------------------------
     private var sampleRate: Double = 48_000
@@ -86,6 +86,8 @@ public final class SoundMixProcessor: @unchecked Sendable {
     private var dryDelayFrames = 0
     private var dryDelayIndex = 0
 
+    private var bed = [Double](repeating: 0, count: BedChannel.count)
+    private var snapshotPeaks = [Double](repeating: -.infinity, count: BedChannel.count)
     private var bedMeters = [LevelMeter](repeating: LevelMeter(), count: BedChannel.count)
     private var meterLeft = LevelMeter(), meterRight = LevelMeter()
     private var appliedTrimDB: Double = 0
@@ -96,24 +98,17 @@ public final class SoundMixProcessor: @unchecked Sendable {
     // does not guarantee one — the optimiser is free to hand the call a
     // temporary copy, which silently removes the mutual exclusion. Allocating
     // the locks once pins them for the object's lifetime.
-    private let lock: UnsafeMutablePointer<os_unfair_lock> = {
-        let p = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
-        p.initialize(to: os_unfair_lock())
-        return p
-    }()
     private let snapshotLock: UnsafeMutablePointer<os_unfair_lock> = {
         let p = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
         p.initialize(to: os_unfair_lock())
         return p
     }()
-    private var pending: ProcessorConfiguration?
-    private var snapshotStorage = RenderSnapshot()
+    private var snapshotStorage = RenderSnapshot(bedPeakDB: [])
     public private(set) var configuration = ProcessorConfiguration()
 
     public init() {}
 
     deinit {
-        lock.deinitialize(count: 1); lock.deallocate()
         snapshotLock.deinitialize(count: 1); snapshotLock.deallocate()
     }
 
@@ -126,14 +121,6 @@ public final class SoundMixProcessor: @unchecked Sendable {
         meterRight.configure(sampleRate: sampleRate)
         limiter.update(settings: configuration.limiter, sampleRate: sampleRate)
         rebuild(configuration)
-    }
-
-    /// Queue a configuration change. Safe to call from any thread; the audio
-    /// thread picks it up at the start of its next block.
-    public func apply(_ config: ProcessorConfiguration) {
-        os_unfair_lock_lock(lock)
-        pending = config
-        os_unfair_lock_unlock(lock)
     }
 
     /// Apply immediately on the current thread. Only for offline use and setup.
@@ -199,6 +186,22 @@ public final class SoundMixProcessor: @unchecked Sendable {
         limiter.update(settings: config.limiter, sampleRate: sampleRate)
     }
 
+    func inheritHistory(from previous: ProcessorRenderState) {
+        lfeFilter.inheritHistory(from: previous.lfeFilter)
+        globalLeft.inheritHistory(from: previous.globalLeft)
+        globalRight.inheritHistory(from: previous.globalRight)
+        speakerLeft.inheritHistory(from: previous.speakerLeft)
+        speakerRight.inheritHistory(from: previous.speakerRight)
+        limiter.inheritHistory(from: previous.limiter)
+        if dryDelay.count == previous.dryDelay.count {
+            for i in dryDelay.indices { dryDelay[i] = previous.dryDelay[i] }
+            dryDelayIndex = previous.dryDelayIndex
+        }
+        for i in bedMeters.indices { bedMeters[i] = previous.bedMeters[i] }
+        meterLeft = previous.meterLeft; meterRight = previous.meterRight
+        underruns = previous.underruns
+    }
+
     public func reset() {
         lfeFilter.reset(); globalLeft.reset(); globalRight.reset()
         speakerLeft.reset(); speakerRight.reset(); limiter.reset()
@@ -222,13 +225,6 @@ public final class SoundMixProcessor: @unchecked Sendable {
     /// Fold `frames` of interleaved input into interleaved stereo output.
     public func process(input: UnsafePointer<Float>, inputChannels: Int, frames: Int,
                         output: UnsafeMutablePointer<Float>) {
-        if os_unfair_lock_trylock(lock) {
-            if let p = pending { pending = nil; os_unfair_lock_unlock(lock); rebuild(p) }
-            else { os_unfair_lock_unlock(lock) }
-        }
-
-        var bed = [Double](repeating: 0, count: BedChannel.count)
-
         for f in 0..<frames {
             let base = f * inputChannels
 
@@ -294,8 +290,11 @@ public final class SoundMixProcessor: @unchecked Sendable {
     }
 
     private func publishSnapshot() {
+        guard os_unfair_lock_trylock(snapshotLock) else { return }
+        defer { os_unfair_lock_unlock(snapshotLock) }
+        for i in snapshotPeaks.indices { snapshotPeaks[i] = bedMeters[i].peakDB }
         let snap = RenderSnapshot(
-            bedPeakDB: bedMeters.map(\.peakDB),
+            bedPeakDB: [],
             outputPeakDB: (meterLeft.peakDB, meterRight.peakDB),
             outputRMSDB: (meterLeft.rmsDB, meterRight.rmsDB),
             clipLeft: meterLeft.clipCount,
@@ -306,14 +305,14 @@ public final class SoundMixProcessor: @unchecked Sendable {
             sampleRate: sampleRate,
             isRunning: true,
             underruns: underruns)
-        os_unfair_lock_lock(snapshotLock)
         snapshotStorage = snap
-        os_unfair_lock_unlock(snapshotLock)
     }
 
     public func snapshot() -> RenderSnapshot {
         os_unfair_lock_lock(snapshotLock)
-        let s = snapshotStorage
+        var s = snapshotStorage
+        // Allocate the public array only on the snapshot reader's thread.
+        s.bedPeakDB = snapshotPeaks.map { $0 }
         os_unfair_lock_unlock(snapshotLock)
         return s
     }
@@ -322,5 +321,71 @@ public final class SoundMixProcessor: @unchecked Sendable {
         os_unfair_lock_lock(snapshotLock)
         snapshotStorage.isRunning = false
         os_unfair_lock_unlock(snapshotLock)
+    }
+}
+
+/// Control-thread preparation with a nonblocking handoff to the audio thread.
+/// Replaced states are retained until the next control-thread update, so their
+/// arrays and filters are never destroyed by the real-time callback.
+public final class SoundMixProcessor: @unchecked Sendable {
+    private let lock: UnsafeMutablePointer<os_unfair_lock> = {
+        let p = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
+        p.initialize(to: os_unfair_lock())
+        return p
+    }()
+    private var current = ProcessorRenderState()
+    private var pending: ProcessorRenderState?
+    private var retired: ProcessorRenderState?
+    private var sampleRate: Double = 48_000
+    public init() {}
+    deinit { lock.deinitialize(count: 1); lock.deallocate() }
+
+    private func readState() -> ProcessorRenderState {
+        os_unfair_lock_lock(lock)
+        let state = current
+        os_unfair_lock_unlock(lock)
+        return state
+    }
+    public var configuration: ProcessorConfiguration { readState().configuration }
+    public var latencyMS: Double { readState().latencyMS }
+
+    // Setup/reset APIs require the stream to be stopped.
+    public func prepare(sampleRate: Double) {
+        self.sampleRate = sampleRate
+        current.prepare(sampleRate: sampleRate)
+    }
+    public func applyNow(_ config: ProcessorConfiguration) {
+        pending = nil; retired = nil
+        current.applyNow(config)
+    }
+    public func reset() { current.reset() }
+    public func markStopped() { readState().markStopped() }
+    public func snapshot() -> RenderSnapshot { readState().snapshot() }
+
+    /// Queue a configuration change. Safe to call from any thread; the audio
+    /// thread picks it up at the start of its next block.
+    public func apply(_ config: ProcessorConfiguration) {
+        let next = ProcessorRenderState()
+        next.applyNow(config)
+        next.prepare(sampleRate: sampleRate)
+        os_unfair_lock_lock(lock)
+        retired = nil
+        pending = next
+        os_unfair_lock_unlock(lock)
+    }
+
+    public func noteUnderrun() { current.noteUnderrun() }
+    public func process(input: UnsafePointer<Float>, inputChannels: Int, frames: Int,
+                        output: UnsafeMutablePointer<Float>) {
+        if os_unfair_lock_trylock(lock) {
+            if let next = pending, retired == nil {
+                next.inheritHistory(from: current)
+                retired = current
+                current = next
+                pending = nil
+            }
+            os_unfair_lock_unlock(lock)
+        }
+        current.process(input: input, inputChannels: inputChannels, frames: frames, output: output)
     }
 }

@@ -197,6 +197,113 @@ do {
     }
 }
 
+
+section("Export safety and tail accounting")
+do {
+    let src = try writeSource(channels: 2, seconds: 0.1, amplitude: { _ in 0.2 }, name: "protected.wav")
+    let original = try Data(contentsOf: src)
+    let cfg = ProcessorConfiguration(layout: LayoutPreset.all.first { $0.requiredInputChannels == 2 }!, headroomMode: .none)
+    let symlink = tmp.appendingPathComponent("alias.wav")
+    let hardlink = tmp.appendingPathComponent("hardlink.wav")
+    try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: src)
+    try FileManager.default.linkItem(at: src, to: hardlink)
+    for output in [src, symlink, hardlink] {
+        do {
+            _ = try OfflineRenderer().render(input: src, output: output, configuration: cfg)
+            check(false, "source alias rejected: \(output.lastPathComponent)")
+        } catch OfflineRenderer.RenderError.sameFile {
+            check(true, "source alias rejected: \(output.lastPathComponent)")
+        }
+        check(try Data(contentsOf: src) == original, "source bytes preserved")
+    }
+    let impulse = tmp.appendingPathComponent("last-frame.wav")
+    do {
+        let f = try AVAudioFile(forWriting: impulse, settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: sr,
+            AVNumberOfChannelsKey: 2, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true])
+        let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: 128)!
+        b.frameLength = 128
+        for c in 0..<2 { for n in 0..<128 { b.floatChannelData![c][n] = n == 127 ? 0.8 : 0 } }
+        try f.write(from: b)
+    }
+    let output = tmp.appendingPathComponent("tail.wav")
+    let result = try OfflineRenderer().render(input: impulse, output: output, configuration: cfg, bitDepth: 32)
+    let actual = try analyse(output)
+    near(result.peakLeftDB, db(actual.peakL), 0.001, "tail included in reported peak")
+    check(result.frames == actual.frames, "reported frames match output")
+    var long = cfg
+    long.limiter.lookaheadMS = 120
+    let extended = try OfflineRenderer().render(input: impulse, output: output, configuration: long, bitDepth: 32)
+    check(extended.frames == (try analyse(output)).frames, "tail longer than one block is fully written")
+    let renderer = OfflineRenderer()
+    renderer.cancel()
+    do {
+        _ = try renderer.render(input: src, output: output, configuration: cfg)
+        check(false, "cancellation before worker start is retained")
+    } catch OfflineRenderer.RenderError.cancelled {
+        check(true, "cancellation before worker start is retained")
+    }
+}
+
+section("I/O failure publication")
+do {
+    let src = try writeSource(channels: 2, seconds: 4, amplitude: { _ in 0.2 }, name: "truncated.wav")
+    let output = tmp.appendingPathComponent("keep-existing.wav")
+    let original = Data("existing destination".utf8)
+    try original.write(to: output)
+    let cfg = ProcessorConfiguration(layout: LayoutPreset.all.first { $0.requiredInputChannels == 2 }!)
+    var truncated = false
+    do {
+        _ = try OfflineRenderer().render(input: src, output: output, configuration: cfg) { _ in
+            if !truncated {
+                truncated = true
+                let handle = try! FileHandle(forWritingTo: src)
+                try! handle.truncate(atOffset: 4096)
+                try! handle.close()
+            }
+        }
+        check(false, "mid-render read failure propagates")
+    } catch { check(true, "mid-render read failure propagates") }
+    check(try Data(contentsOf: output) == original, "read failure preserves existing destination")
+    let intact = try writeSource(channels: 2, seconds: 0.1, amplitude: { _ in 0.2 }, name: "intact.wav")
+    let directory = tmp.appendingPathComponent("destination-directory.wav")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    do {
+        _ = try OfflineRenderer().render(input: intact, output: directory, configuration: cfg)
+        check(false, "output publication failure propagates")
+    } catch { check(true, "output publication failure propagates") }
+    let renderer = OfflineRenderer()
+    do {
+        _ = try renderer.render(input: intact, output: output, configuration: cfg) { _ in renderer.cancel() }
+        check(false, "mid-render cancellation propagates")
+    } catch OfflineRenderer.RenderError.cancelled { check(true, "mid-render cancellation propagates") }
+    check(try Data(contentsOf: output) == original, "cancelled render preserves existing destination")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: tmp.path)
+    check(!leftovers.contains { $0.hasPrefix(".soundmix-") }, "failed render temporary files cleaned up")
+}
+
+section("Independent device clocks")
+for ppm in [-200.0, 200.0] {
+    let ring = FloatRingBuffer(frames: 4096, channels: 2, targetFrames: 960)
+    var input = [Float](repeating: 0.25, count: 260)
+    var output = [Float](repeating: 0, count: 256)
+    var accumulated = 0.0
+    var started = false, amplitudeError = 0.0
+    // Five simulated minutes, including both faster and slower capture clocks.
+    for _ in 0..<112500 {
+        accumulated += 128 * (1 + ppm / 1_000_000)
+        let produced = Int(accumulated); accumulated -= Double(produced)
+        ring.write(&input, frames: produced)
+        ring.readAdaptive(into: &output, frames: 128)
+        if output[0] != 0 { started = true }
+        if started { amplitudeError = max(amplitudeError, abs(Double(output[0]) - 0.25)) }
+    }
+    check(started, "clock bridge starts after prefill at \(ppm) ppm")
+    check(ring.underruns == 0 && ring.overruns == 0, "no clock-drift dropouts at \(ppm) ppm")
+    near(amplitudeError, 0, 0.00001, "clock bridge preserves DC gain")
+    check((700...1200).contains(ring.framesAvailable), "clock bridge holds buffer occupancy")
+}
+
 print("\n\(checks - failures)/\(checks) checks passed")
 if failures > 0 { print("\(failures) FAILED"); exit(1) }
 print("Offline rendering verified.")

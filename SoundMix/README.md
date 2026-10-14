@@ -9,8 +9,10 @@ blunt preamp.
 
 ```bash
 ./build.sh              # builds build/SoundMix.app and build/bedgen
-./run-tests.sh          # 162 DSP checks (no audio hardware needed)
-./run-offline-tests.sh  # 23 checks that render real files end to end
+./run-tests.sh          # 193 DSP checks (no audio hardware needed)
+./run-offline-tests.sh  # 47 file-render and clock-drift checks
+./run-realtime-tests.sh # 6 concurrency and resampling fidelity checks
+./run-device-volume-tests.sh # 10 device-volume checks; real devices are read only
 ```
 
 Swift 6 toolchain and the macOS SDK are the only requirements. No Xcode project, no package
@@ -36,7 +38,7 @@ manager, no network access.
 | **LFE filter** | fixed 125 Hz, 4th-order Butterworth | mode, cut-off and slope all adjustable |
 | **Offline rendering** | none — live device only | drag in a multichannel file, render to stereo at ~127× real time |
 | **Earphone correction** | PEQ text only | pair a measured response with each EQ profile; plot measured, EQ and corrected together |
-| **Tests** | none shipped | **185** automated checks, including real file renders |
+| **Tests** | none shipped | **256** automated checks, including real file renders |
 
 ## The matrix problem, and the fix
 
@@ -130,7 +132,7 @@ Sources/
     SoundMixEngine.swift    two AUHAL units, bring-up, device-loss handling
     OfflineRenderer.swift   file in, stereo file out, same chain
   SoundMixApp/       SwiftUI, CloudZone design system
-Tests/main.swift    118 checks
+Tests/main.swift    193 checks
 ```
 
 ## Interface
@@ -144,7 +146,8 @@ UI library — and every colour comes from a named token in `Sources/SoundMixApp
 
 - No binaural / HRTF mode.
 - Input and output must run at the same sample rate. SoundMix asks Core Audio to match
-  the input to the output and reports clearly when the device refuses, rather than resampling.
+  the input to the output and reports clearly when the device refuses, instead of performing arbitrary sample-rate conversion. A continuously adjusted
+  windowed-sinc bridge compensates for small differences between independent device clocks.
 - Ad-hoc signed. Gatekeeper will ask on first launch unless you sign it with your own identity.
 - **Microphone permission is mandatory.** macOS classes every Core Audio input as a microphone,
   including a virtual loopback like BlackHole, so the first Start shows the system prompt. If it
@@ -153,7 +156,7 @@ UI library — and every colour comes from a named token in `Sources/SoundMixApp
 
 ## Verified so far
 
-- **162/162 DSP checks pass** (`./run-tests.sh`), covering matrix parity with the shipped
+- **193/193 DSP checks pass** (`./run-tests.sh`), covering matrix parity with the shipped
   binary, headroom maths, Butterworth design and group delay, REW/APO parsing, the EQ
   profile library and its import/export, earphone-measurement parsing, limiter ceilings,
   and end-to-end routing, swap and muting through the processor.
@@ -164,3 +167,36 @@ UI library — and every colour comes from a named token in `Sources/SoundMixApp
   no clipping.
 - Core Audio enumeration, sample-rate matching at both 48 and 96 kHz, and hot
   reconfiguration while streaming all work.
+
+## Reliability fixes (2026-10-14)
+
+- File exports reject the source itself, symbolic links, and hard links. Completed
+  renders replace the destination atomically; failed or cancelled renders preserve it.
+- Read and write failures propagate. Tail frames are written in bounded blocks and
+  included in peak, clipping, and limiter statistics.
+- Limiter interpolation uses separate left/right histories, linked gain, and a
+  look-ahead hold before release. All three fractional phases, including the
+  half-sample phase, are tested.
+- EQ profile writes are atomic and errors reach the UI without marking drafts saved.
+- DSP configurations are prepared on the control thread. Audio callbacks use
+  nonblocking handoffs and snapshot publication; filter history survives live edits.
+- The clock bridge prefills the safety buffer and adjusts consumption to occupancy.
+  Simulated ±200 ppm drift runs for five minutes per direction without dropped blocks.
+- The footer identifies the shared stereo limiter as Ready, reducing, Off, or Stopped.
+  Headroom shows the matrix/manual/EQ preamp breakdown, with live 1 dB gain steps.
+
+The new checks run without audio hardware. The updated build still needs listening
+validation on the intended input/output devices; previous live measurements below
+or in VERIFICATION.md do not validate this new clock bridge.
+
+## Device volume
+
+Devices exposes separate macOS input/output volume sliders for the selected devices.
+They work while playback is stopped or running and affect other applications using
+that device. Values refresh while the page is open, including external changes.
+A writable master control is preferred; otherwise writable channel controls are
+linked while preserving their relative balance. Unsupported/read-only controls
+are disabled with an explanation. No device volume is changed on startup.
+
+Hardware setters are covered by mocked tests; actual connected-device capability
+and volume reads were verified without changing the user's volume.

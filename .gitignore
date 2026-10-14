@@ -3,3 +3,6 @@
 
 # Temporary Boost hook metadata
 .boost/
+
+# Local memory notes
+MEMORY.md

@@ -307,7 +307,7 @@ do {
     Filter 1: ON PK Fc 60 Hz Gain 4 dB Q 0.9
     Filter 2: ON HSC Fc 8000 Hz Gain -2.5 dB Q 0.7
     """
-    let saved = lib.save(EQProfile(name: "Desk", globalText: apo))
+    let saved = try! lib.save(EQProfile(name: "Desk", globalText: apo))
     check(lib.profiles.count == 1, "saving adds one profile")
     check(lib.profile(named: "Desk") != nil, "profile is findable by name")
     check(saved.globalProfile.activeFilterCount == 2, "profile exposes its parsed filters")
@@ -325,10 +325,10 @@ do {
     near(saved.peakBoostDB(sampleRate: sr), 1.0, 0.6, "peak boost accounts for preamp plus filter")
 
     // Duplicate never collides.
-    let copy = lib.duplicate(saved)
+    let copy = try! lib.duplicate(saved)
     check(copy.name == "Desk copy", "duplicate gets a free name", copy.name)
     check(copy.id != saved.id, "duplicate gets a new id")
-    let copy2 = lib.duplicate(saved)
+    let copy2 = try! lib.duplicate(saved)
     check(copy2.name == "Desk copy 2", "second duplicate increments", copy2.name)
 
     // Export → import round trip.
@@ -365,7 +365,7 @@ do {
     near(reparsed.filters[0].frequency, 60, 1e-6, "exported APO keeps Fc")
     near(reparsed.filters[1].gainDB, -2.5, 1e-6, "exported APO keeps gain")
 
-    lib.delete(saved)
+    try! lib.delete(saved)
     check(lib.profile(named: "Desk") == nil, "delete removes the profile")
 }
 
@@ -452,7 +452,7 @@ do {
         .appendingPathComponent("dmx-fr-tests-\(UUID().uuidString)")
     let lib = EQProfileLibrary(directory: tmp)
     defer { try? FileManager.default.removeItem(at: tmp) }
-    let withCurve = lib.save(EQProfile(name: "IEM", globalText: "Preamp: -2 dB", measurementLeft: m))
+    let withCurve = try! lib.save(EQProfile(name: "IEM", globalText: "Preamp: -2 dB", measurementLeft: m))
     check(withCurve.summary.contains("measured"), "a paired profile says so in its summary",
           withCurve.summary)
     let reloaded = EQProfileLibrary(directory: tmp).profiles.first
@@ -558,7 +558,7 @@ do {
 
     // Both ears and a target survive a save/reload.
     let target = FrequencyResponse.parse(mono, name: "JM-1")!
-    let saved = lib.save(EQProfile(name: "IEM + target",
+    let saved = try! lib.save(EQProfile(name: "IEM + target",
                                    globalText: "Preamp: -3 dB",
                                    measurementLeft: pair.left,
                                    measurementRight: pair.right,
@@ -573,7 +573,7 @@ do {
     check(reloaded?.target?.name == "JM-1", "target reloads", reloaded?.target?.name ?? "nil")
 
     // One ear alone is allowed.
-    let oneEar = lib.save(EQProfile(name: "One ear", measurementLeft: pair.left))
+    let oneEar = try! lib.save(EQProfile(name: "One ear", measurementLeft: pair.left))
     check(oneEar.hasMeasurement && oneEar.measurementRight == nil, "a single ear is valid")
     check(oneEar.summary.contains("one ear"), "summary says so", oneEar.summary)
     check(oneEar.anyMeasurement != nil, "anyMeasurement falls back to whichever side exists")
@@ -608,6 +608,58 @@ do {
     // A perfect correction reads as zero error.
     let selfDiff = pair.left.difference(from: pair.left)
     check(selfDiff.allSatisfy { abs($0.db) < 1e-9 }, "a curve minus itself is zero everywhere")
+}
+
+
+section("Limiter channel isolation and live handoff")
+do {
+    let a = TruePeakLimiter(), b = TruePeakLimiter()
+    var maxDifference = 0.0
+    for n in 0..<10000 {
+        var l = 1.2 * sin(Double(n) * 0.91), r = 0.7 * cos(Double(n) * 0.27)
+        var swappedL = r, swappedR = l
+        a.process(&l, &r); b.process(&swappedL, &swappedR)
+        maxDifference = max(maxDifference, abs(l - swappedR), abs(r - swappedL))
+    }
+    near(maxDifference, 0, 1e-12, "limiter is invariant under channel exchange")
+    let control = SoundMixProcessor(), edited = SoundMixProcessor()
+    let cfg = ProcessorConfiguration()
+    for p in [control, edited] { p.applyNow(cfg); p.prepare(sampleRate: 48000) }
+    var input = [Float](repeating: 0.25, count: 128 * 16)
+    var x = [Float](repeating: 0, count: 256), y = x
+    control.process(input: &input, inputChannels: 16, frames: 128, output: &x)
+    edited.process(input: &input, inputChannels: 16, frames: 128, output: &y)
+    edited.apply(cfg)
+    control.process(input: &input, inputChannels: 16, frames: 128, output: &x)
+    edited.process(input: &input, inputChannels: 16, frames: 128, output: &y)
+    check(x == y, "prepared handoff preserves filter and delay history")
+}
+
+section("Half-sample true peaks")
+do {
+    let limiter = TruePeakLimiter()
+    var energy = 0.0
+    // These sample values are below the ceiling, but the reconstructed sine is not.
+    for n in 0..<30000 {
+        var l = 1.2 * sin(.pi * 0.5 * Double(n) + .pi / 4), r = l
+        limiter.process(&l, &r)
+        if n >= 29000 { energy += l * l }
+    }
+    let reconstructedPeakDB = 20 * log10(sqrt(2 * energy / 1000))
+    check(reconstructedPeakDB <= -0.99, "half-sample peaks respect -1 dBTP ceiling", "peak \(reconstructedPeakDB)")
+}
+
+section("Profile write failures")
+do {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try! Data("not a directory".utf8).write(to: path)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let lib = EQProfileLibrary(directory: path)
+    do {
+        _ = try lib.save(EQProfile(name: "Must fail"))
+        check(false, "failed profile save throws")
+    } catch { check(true, "failed profile save throws") }
+    check(lib.profiles.isEmpty, "failed save does not claim persistence")
 }
 
 print("\n\(checks - failures)/\(checks) checks passed")

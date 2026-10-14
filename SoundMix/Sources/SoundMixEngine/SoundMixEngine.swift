@@ -196,8 +196,12 @@ public final class SoundMixEngine: @unchecked Sendable {
         setBufferFrameSize(output.id, frames)
         maxFrames = max(frames * 4, 2048)
 
+        guard options.safetyBufferMS.isFinite, (0...2000).contains(options.safetyBufferMS) else {
+            throw EngineError.unsupported("Safety buffer must be between 0 and 2000 ms.")
+        }
         let ringFrames = max(Int(options.safetyBufferMS / 1000 * sampleRate), frames * 4)
-        ring = FloatRingBuffer(frames: ringFrames + frames * 2, channels: inputChannels)
+        ring = FloatRingBuffer(frames: ringFrames * 2 + maxFrames * 2 + 64,
+                               channels: inputChannels, targetFrames: ringFrames)
 
         captureStorage = .allocate(capacity: maxFrames * inputChannels)
         captureStorage?.initialize(repeating: 0, count: maxFrames * inputChannels)
@@ -438,7 +442,7 @@ public final class SoundMixEngine: @unchecked Sendable {
             return noErr
         }
 
-        if !ring.read(into: pull, frames: Int(frames)) {
+        if !ring.readAdaptive(into: pull, frames: Int(frames)) {
             processor.noteUnderrun()
         }
         processor.process(input: pull, inputChannels: inputChannels,

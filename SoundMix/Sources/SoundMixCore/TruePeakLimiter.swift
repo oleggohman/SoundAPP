@@ -48,7 +48,9 @@ public final class TruePeakLimiter {
     /// 4× upsampling kernel, a windowed sinc evaluated at the three
     /// intermediate phases. Phase 0 is the sample itself.
     private static let phases: [[Double]] = makePhases(taps: 16, factor: 4)
-    private var history: [Double] = Array(repeating: 0, count: 16)
+    private var historyL: [Double] = Array(repeating: 0, count: 16)
+    private var historyR: [Double] = Array(repeating: 0, count: 16)
+    private var holdSamples = 0
     private var historyIndex = 0
 
     public init(sampleRate: Double = 48_000, settings: Settings = Settings()) {
@@ -69,7 +71,8 @@ public final class TruePeakLimiter {
 
     public func reset() {
         for i in delayL.indices { delayL[i] = 0; delayR[i] = 0 }
-        for i in history.indices { history[i] = 0 }
+        for i in historyL.indices { historyL[i] = 0; historyR[i] = 0 }
+        holdSamples = 0
         writeIndex = 0
         historyIndex = 0
         envelope = 1
@@ -106,7 +109,10 @@ public final class TruePeakLimiter {
         let inL = left, inR = right
 
         // True-peak estimate of the incoming frame, using the louder channel.
-        let peak = max(truePeak(inL), truePeak(inR))
+        historyL[historyIndex] = inL
+        historyR[historyIndex] = inR
+        historyIndex = (historyIndex + 1) % historyL.count
+        let peak = max(truePeak(inL, history: historyL), truePeak(inR, history: historyR))
 
         // Target gain that would bring this peak to the ceiling.
         let target = peak > ceilingLinear ? ceilingLinear / peak : 1.0
@@ -114,6 +120,9 @@ public final class TruePeakLimiter {
         // Attack is instantaneous against the look-ahead window; release is smoothed.
         if target < envelope {
             envelope = target
+            holdSamples = lookaheadSamples + historyL.count
+        } else if holdSamples > 0 {
+            holdSamples -= 1
         } else {
             envelope = target + (envelope - target) * releaseCoefficient
         }
@@ -140,10 +149,7 @@ public final class TruePeakLimiter {
 
     /// Peak magnitude of the 4× oversampled signal around the newest sample.
     @inline(__always)
-    private func truePeak(_ sample: Double) -> Double {
-        history[historyIndex] = sample
-        historyIndex = (historyIndex + 1) % history.count
-
+    private func truePeak(_ sample: Double, history: [Double]) -> Double {
         var peak = abs(sample)
         for phase in Self.phases {
             var acc = 0.0
@@ -157,10 +163,23 @@ public final class TruePeakLimiter {
         return peak
     }
 
+    // Copy into preallocated storage when adopting a prepared configuration.
+    func inheritHistory(from previous: TruePeakLimiter) {
+        guard delayL.count == previous.delayL.count,
+              settings.enabled == previous.settings.enabled else { return }
+        for i in delayL.indices { delayL[i] = previous.delayL[i]; delayR[i] = previous.delayR[i] }
+        for i in historyL.indices { historyL[i] = previous.historyL[i]; historyR[i] = previous.historyR[i] }
+        writeIndex = previous.writeIndex
+        historyIndex = previous.historyIndex
+        envelope = previous.envelope
+        holdSamples = previous.holdSamples
+    }
+
     /// Windowed-sinc interpolation kernels for the fractional phases 1/4, 2/4, 3/4.
     private static func makePhases(taps: Int, factor: Int) -> [[Double]] {
         var result: [[Double]] = []
-        let center = Double(taps) / 2 - 0.5
+        // Integer origin keeps all three fractional phases: 1/4, 1/2, 3/4.
+        let center = Double(taps / 2 - 1)
         for p in 1..<factor {
             let offset = Double(p) / Double(factor)
             var kernel: [Double] = []

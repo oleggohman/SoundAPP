@@ -23,7 +23,10 @@ struct DevicesPanel: View {
                 CZSelect(label: "Input device",
                          selection: $model.inputUID,
                          options: model.compatibleInputs.map { ($0.uid, deviceTitle($0)) })
-                if let d = model.inputDevice { DeviceDetail(device: d, needed: model.layout.requiredInputChannels, isInput: true) }
+                if let d = model.inputDevice {
+                    DeviceDetail(device: d, needed: model.layout.requiredInputChannels, isInput: true)
+                    DeviceVolumeView(device: d, isInput: true).id("input-\(d.id)")
+                }
             }
 
             CZCard(title: "Output",
@@ -31,7 +34,10 @@ struct DevicesPanel: View {
                 CZSelect(label: "Output device",
                          selection: $model.outputUID,
                          options: model.compatibleOutputs.map { ($0.uid, deviceTitle($0)) })
-                if let d = model.outputDevice { DeviceDetail(device: d, needed: 2, isInput: false) }
+                if let d = model.outputDevice {
+                    DeviceDetail(device: d, needed: 2, isInput: false)
+                    DeviceVolumeView(device: d, isInput: false).id("output-\(d.id)")
+                }
                 CZToggleRow(title: "Swap physical left and right",
                             subtitle: "Also flips which half of a stereo speaker-EQ file goes to which speaker.",
                             isOn: $model.swapOutputs)
@@ -84,6 +90,57 @@ struct DevicesPanel: View {
         parts.append("· \(d.channelSummary)")
         if !d.transportType.isEmpty { parts.append("· \(d.transportType)") }
         return parts.joined(separator: " ")
+    }
+}
+
+private struct DeviceVolumeView: View {
+    let device: AudioDevice
+    let isInput: Bool
+    @State private var volume = DeviceVolume.State(value: nil, writable: false, channelControls: 0)
+    @State private var error: String?
+    @State private var dragging = false
+
+    private var channels: Int { isInput ? device.inputChannels : device.outputChannels }
+    private var title: String { isInput ? "Input device volume" : "Output device volume" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CZ.Spacing.sm) {
+            HStack {
+                Text(title).font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
+                Spacer()
+                Text(volume.value.map { "\(Int(($0 * 100).rounded()))%" } ?? "Unavailable")
+                    .font(CZ.Typography.mono(12))
+            }
+            Slider(value: Binding(get: { volume.value ?? 0 }, set: { value in
+                do {
+                    try DeviceVolume.set(value, device: device.id, isInput: isInput, channels: channels)
+                    volume = DeviceVolume.read(device: device.id, isInput: isInput, channels: channels)
+                    error = nil
+                } catch {
+                    self.error = error.localizedDescription
+                    refresh()
+                }
+            }), in: 0...1, onEditingChanged: { dragging = $0 })
+                .disabled(!volume.writable)
+                .accessibilityLabel(title)
+                .tint(CZ.Color.blue)
+            Text(volume.writable
+                 ? "Changes macOS volume for this device, including other apps.\(volume.channelControls > 0 ? " Links writable channel controls while preserving balance." : "")"
+                 : "This device does not expose writable macOS volume. Use its hardware controls, source-app volume, or SoundMix manual gain under Downmix.")
+                .font(CZ.Typography.caption).foregroundStyle(CZ.Color.mediumGray)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error { CZAlert(kind: .error, message: error) }
+        }
+        .task {
+            while !Task.isCancelled {
+                if !dragging { refresh() }
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { break }
+            }
+        }
+    }
+
+    private func refresh() {
+        volume = DeviceVolume.read(device: device.id, isInput: isInput, channels: channels)
     }
 }
 
@@ -150,7 +207,17 @@ struct SoundMixPanel: View {
                     stat("Automatic trim", String(format: "%+.2f dB", config.automaticTrimDB), nil)
                     stat("Total applied", String(format: "%+.2f dB", config.totalTrimDB), nil)
                 }
-                CZField(label: "Additional manual gain", text: $model.manualGainText, suffix: "dB", width: 160)
+                HStack(alignment: .bottom, spacing: CZ.Spacing.md) {
+                    CZField(label: "Additional manual gain", text: $model.manualGainText, suffix: "dB", width: 160)
+                    Button("−1 dB") { model.adjustManualGain(by: -1) }
+                    Button("+1 dB") { model.adjustManualGain(by: 1) }
+                }
+                Text(model.gainBreakdown)
+                    .font(CZ.Typography.caption).foregroundStyle(CZ.Color.mediumGray)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("The limiter only reduces peaks. Use small gain steps for quiet material; buttons apply immediately during playback.")
+                    .font(CZ.Typography.caption).foregroundStyle(CZ.Color.mediumGray)
+                    .fixedSize(horizontal: false, vertical: true)
                 if matrix.worstCasePeakGainDB > 0 && model.headroomMode == .none && !model.limiterEnabled {
                     CZAlert(kind: .warning,
                             message: String(format: "With no automatic trim and no limiter this matrix can reach %+.1f dB — the same overload the original app has.", matrix.worstCasePeakGainDB + (Double(model.manualGainText) ?? 0)))
@@ -885,8 +952,7 @@ struct MonitorPanel: View {
                 CZMeterBar(label: "R", db: model.snapshot.outputPeakDB.1,
                            rmsDB: model.snapshot.outputRMSDB.1, clipped: model.snapshot.clipRight > 0)
                 HStack(spacing: CZ.Spacing.lg) {
-                    stat("Limiter", model.snapshot.gainReductionDB > 0.05
-                         ? String(format: "−%.1f dB", model.snapshot.gainReductionDB) : "idle")
+                    stat("Stereo limiter", model.limiterStatus)
                     stat("Clips", "\(model.snapshot.clipLeft + model.snapshot.clipRight)")
                     stat("Buffer underruns", "\(model.snapshot.underruns)")
                     stat("Chain latency", String(format: "%.1f ms", model.snapshot.latencyMS))
