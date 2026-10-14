@@ -28,5 +28,9 @@
 	<string>SoundMix opens the selected audio interface as an input so it can fold its multichannel bed down to stereo in real time.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>CFBundleHelpBookFolder</key>
+	<string>SoundMix.help</string>
+	<key>CFBundleHelpBookName</key>
+	<string>io.soundmix.app.help</string>
 </dict>
 </plist>

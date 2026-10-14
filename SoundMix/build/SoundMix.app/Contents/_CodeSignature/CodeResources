@@ -8,6 +8,19 @@
 		<data>
 		hdeI5g8YEB82kafU4/42G7OUomo=
 		</data>
+		<key>Resources/SoundMix.help/Contents/Info.plist</key>
+		<data>
+		TWRHhK/40HtLXa1EMDguGdw/8Fg=
+		</data>
+		<key>Resources/SoundMix.help/Contents/Resources/en.lproj/index.html</key>
+		<dict>
+			<key>hash</key>
+			<data>
+			h/HZsdN/tGMy8w6ETfLDTd7PSU8=
+			</data>
+			<key>optional</key>
+			<true/>
+		</dict>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -17,6 +30,22 @@
 			<data>
 			micKXynLfEAjWtHTADnsT3nKnTVk0IFkXkSYRtcs4JI=
 			</data>
+		</dict>
+		<key>Resources/SoundMix.help/Contents/Info.plist</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			PqGkbP2wOItFj6f4mfqRzx9hgocXOkqZyQEfqJEZhUw=
+			</data>
+		</dict>
+		<key>Resources/SoundMix.help/Contents/Resources/en.lproj/index.html</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			lZxBSXj/SdnKNzvOCvCUpmMarxSPPf3A0PWGv4kIc+c=
+			</data>
+			<key>optional</key>
+			<true/>
 		</dict>
 	</dict>
 	<key>rules</key>
