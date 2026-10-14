@@ -131,13 +131,13 @@ Sources/
     RingBuffer.swift        lock-free SPSC bridge between the two device clocks
     SoundMixEngine.swift    two AUHAL units, bring-up, device-loss handling
     OfflineRenderer.swift   file in, stereo file out, same chain
-  SoundMixApp/       SwiftUI, CloudZone design system
+  SoundMixApp/       SwiftUI, SoundMix design system
 Tests/main.swift    193 checks
 ```
 
 ## Interface
 
-Built on the CloudZone design system: dark-blue (`#0e1e4d`) sidebar, pale-blue (`#eef2fb`)
+Built on the SoundMix design system: dark-blue (`#0e1e4d`) sidebar, pale-blue (`#eef2fb`)
 content area, blue (`#2fa8f7`) primary actions, Landour for body and headings, Wix Madefor for
 navigation and buttons. Every component is custom-built on SwiftUI primitives — no third-party
 UI library — and every colour comes from a named token in `Sources/SoundMixApp/Theme.swift`.

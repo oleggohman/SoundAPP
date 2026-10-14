@@ -110,7 +110,7 @@ struct Sidebar: View {
                         .font(CZ.Typography.body(19, .semibold, display: true))
                         .foregroundStyle(CZ.Color.invertedText)
                 }
-                Text("CloudZone")
+                Text("SoundMix")
                     .font(CZ.Typography.ui(11, .medium))
                     .foregroundStyle(CZ.Color.mediumBlue)
                     .tracking(1.4)

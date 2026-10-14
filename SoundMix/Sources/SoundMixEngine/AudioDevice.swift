@@ -36,7 +36,7 @@ public final class AudioDeviceDirectory: @unchecked Sendable {
     public var onChange: (([AudioDevice]) -> Void)?
 
     private var listenerInstalled = false
-    private let queue = DispatchQueue(label: "cloudzone.downmix.devicedirectory")
+    private let queue = DispatchQueue(label: "io.soundmix.devicedirectory")
 
     public init() {
         refresh()

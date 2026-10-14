@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>SoundMix</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.cloudzone.soundmix</string>
+	<string>io.soundmix.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

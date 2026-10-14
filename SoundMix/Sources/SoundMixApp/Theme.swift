@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// CloudZone design tokens. Colours are never written as literals elsewhere in
+/// SoundMix design tokens. Colours are never written as literals elsewhere in
 /// the app — every surface, border and accent comes from this file.
 public enum CZ {
 

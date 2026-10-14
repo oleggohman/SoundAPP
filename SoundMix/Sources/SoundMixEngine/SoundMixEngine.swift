@@ -84,7 +84,7 @@ public final class SoundMixEngine: @unchecked Sendable {
     private var inputDeviceID: AudioDeviceID = 0
     private var outputDeviceID: AudioDeviceID = 0
     private var aliveListeners: [(AudioDeviceID, AudioObjectPropertyListenerBlock)] = []
-    private let listenerQueue = DispatchQueue(label: "cloudzone.downmix.enginelisteners")
+    private let listenerQueue = DispatchQueue(label: "io.soundmix.enginelisteners")
 
     public init() {}
     deinit { stop() }
