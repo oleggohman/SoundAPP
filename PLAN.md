@@ -6,7 +6,7 @@ Status: Planned. Do not implement as part of the current bug fixes.
 
 Create a complete user-facing help file explaining every application feature and the audio terminology needed to use it confidently.
 
-- [ ] Inventory the implemented features and controls across Devices, Downmix, File, Output EQ, Monitor, and Log. Document actual behavior and limitations.
+- [ ] Inventory the implemented features and controls across Devices, Downmix, Output EQ, Monitor, and Log. Document actual behavior and limitations.
 - [ ] Explain setup: microphone permission, virtual loopback inputs, physical outputs, channel requirements, sample rates, and starting/stopping playback.
 - [ ] Explain Dolby versus Dolby Atmos, decoded multichannel PCM, channel beds versus objects, stereo downmixing, and why this application is not an Atmos decoder or binaural/HRTF renderer.
 - [ ] Explain channel layouts and mapping, including 2.0, 2.1, 5.1, 7.1.4, 9.1.6, and each channel abbreviation used by the application.
@@ -17,7 +17,7 @@ Create a complete user-facing help file explaining every application feature and
 - [ ] Explain parametric EQ, preamp, frequency, Q, bandwidth, shelves, global versus speaker correction, per-ear settings, bypass/A-B comparison, and how EQ affects available headroom.
 - [ ] Explain profile creation, saving, duplication, deletion, import/export, supported file formats, and how save errors are reported.
 - [ ] Explain measured frequency responses, target curves, normalization, corrected-response plots, deviation, and the limits of predicting perceived sound from a plot.
-- [ ] Explain offline rendering, source-layout selection, output bit depth, progress/cancellation, source-file protection, render statistics, and output locations.
+- [x] Explain offline rendering, source-layout selection, output bit depth, progress/cancellation, source-file protection, render statistics, and output locations. (Removed - feature no longer exists)
 - [ ] Explain buffer size, safety buffering, latency, independent device clocks, drift correction, underruns/overruns, device changes, and when settings require a restart.
 - [ ] Add troubleshooting for low volume, missing channels, no audio, distortion, excessive limiter activity, dropouts, permissions, incompatible sample rates, and file errors.
 - [ ] Add a searchable glossary, practical examples, and screenshots matching the released interface. Keep configuration examples explicit about gain changes.
@@ -28,13 +28,13 @@ Acceptance: Every visible feature is covered, terminology is understandable to a
 
 ## Remove the File section from the main navigation
 
-Status: Planned. Do not implement now.
+Status: Completed.
 
-- [ ] Remove the File option and its entire offline-rendering section from the main navigation; this workflow is not relevant to the intended application.
-- [ ] Review related navigation, state, entry points, and documentation so no dead links or references remain.
-- [ ] Decide whether to retain the offline renderer internally for automated tests before removing supporting code.
-- [ ] Update the future help-documentation scope to match the resulting interface and omit the removed File workflow.
-- [ ] Verify that live input/output playback, device controls, downmix, EQ, monitoring, and logs remain unchanged.
+- [x] Remove the File option and its entire offline-rendering section from the main navigation; this workflow is not relevant to the intended application.
+- [x] Review related navigation, state, entry points, and documentation so no dead links or references remain.
+- [x] Decide whether to retain the offline renderer internally for automated tests before removing supporting code. (Retained OfflineRenderer for internal use).
+- [x] Update the future help-documentation scope to match the resulting interface and omit the removed File workflow.
+- [x] Verify that live input/output playback, device controls, downmix, EQ, monitoring, and logs remain unchanged.
 
 ## Remove CloudZone naming from code and interface
 
