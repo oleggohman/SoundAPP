@@ -62,9 +62,10 @@ cp -R Resources/SoundMix.help "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 echo "==> Signing (ad-hoc, hardened runtime)"
-# --options runtime is required for notarization later and costs nothing now.
-codesign --force --deep --sign - --options runtime "$APP" 2>/dev/null \
-    || codesign --force --deep --sign - "$APP" 2>/dev/null \
+# --options runtime is required for notarization later.
+# It strictly enforces microphone access, so the entitlement is required.
+codesign --force --deep --sign - --options runtime --entitlements SoundMix.entitlements "$APP" 2>/dev/null \
+    || codesign --force --deep --sign - --entitlements SoundMix.entitlements "$APP" 2>/dev/null \
     || echo "    (ad-hoc signing unavailable; the app still runs locally)"
 
 echo "==> Built $APP — version $VERSION (build $BUILD_NUMBER)"
