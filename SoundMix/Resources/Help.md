@@ -99,6 +99,15 @@ SoundMix natively understands the plain-text filter format exported by Room EQ W
 
 ---
 
+### The Graphical PEQ Editor
+**Output EQ → Response → Expand & edit PEQ** opens a full-screen plot of the selected profile's filters, where bands are edited by dragging rather than by typing.
+
+- Drag a numbered band to move it: vertically for gain, horizontally for frequency. Hold **Shift** to lock the drag to whichever axis you have moved furthest along. Bands keep their numbering, so dragging one past another never renumbers either.
+- Each row in the band list has its own mute and delete control, and the **Delete** key removes the selected band once the list has focus. Nothing is destroyed for good: **Reset** restores deleted bands along with every other unapplied edit.
+- **Audition live**, on by default, sends the draft to the running processor as you edit, so you can tune by ear. Nothing is written to the EQ text or the profile library until **Apply**, and **Cancel** — or closing the window any other way — puts the audio back to the EQ you started with. Edits ramp over a few hundred milliseconds rather than stepping, so a large drag does not click; after a fast flick the sound therefore lags the plot a little.
+- The profile picker in the header loads another profile without leaving the editor. A draft with unapplied edits asks whether to apply or discard first, and the measured response and target curve follow the switch.
+- While EQ bypass is on nothing is auditioned — bypass still means bypass.
+
 ## 4. Monitoring & Protection
 
 ### The True-Peak Limiter

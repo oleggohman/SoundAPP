@@ -45,13 +45,70 @@ public struct PEQEditDraft {
             changedSpeaker = true
         }
     }
-    /// Dragging only adjusts gain; frequency, Q and the other bands stay unchanged.
-    public mutating func setGain(_ gain: Double, at index: Int, for stage: Stage) {
-        guard gain.isFinite else { return }
+    /// Lowest frequency a band can be dragged to, matching the inspector field.
+    public static let minimumFrequency = 20.0
+
+    /// Drag resolution: 1 Hz below 1 kHz and 10 Hz above it, so a horizontal
+    /// drag lands on a value somebody would have typed rather than 1037.4183 Hz.
+    public static func quantisedFrequency(_ hz: Double, maxFrequency: Double) -> Double {
+        let upper = max(minimumFrequency, maxFrequency)
+        let clamped = min(upper, max(minimumFrequency, hz))
+        let step = clamped < 1000 ? 1.0 : 10.0
+        return min(upper, max(minimumFrequency, (clamped / step).rounded() * step))
+    }
+
+    /// Move one band. Both axes are optional, so a vertical-only drag leaves the
+    /// frequency exactly as it was and vice versa; Q, kind and the other bands
+    /// are never touched. The band list keeps its order: APO filters are a list
+    /// and the plot numbers them by position, so dragging one past another must
+    /// not renumber the point under the cursor.
+    public mutating func setBand(at index: Int, for stage: Stage,
+                                 gainDB: Double? = nil, frequency: Double? = nil,
+                                 maxFrequency: Double = 20_000) {
         var p = profile(stage)
         guard p.filters.indices.contains(index) else { return }
-        p.filters[index].gainDB = min(24, max(-24, gain))
+        if let gainDB, gainDB.isFinite {
+            p.filters[index].gainDB = min(24, max(-24, gainDB))
+        }
+        if let frequency, frequency.isFinite {
+            p.filters[index].frequency = Self.quantisedFrequency(frequency, maxFrequency: maxFrequency)
+        }
         setProfile(p, for: stage)
+    }
+
+    public mutating func setGain(_ gain: Double, at index: Int, for stage: Stage) {
+        setBand(at: index, for: stage, gainDB: gain)
+    }
+
+    public mutating func setFrequency(_ frequency: Double, at index: Int, for stage: Stage,
+                                      maxFrequency: Double = 20_000) {
+        setBand(at: index, for: stage, frequency: frequency, maxFrequency: maxFrequency)
+    }
+
+    /// Silence a band without destroying it, the non-fatal twin of `removeFilter`.
+    public mutating func setEnabled(_ enabled: Bool, at index: Int, for stage: Stage) {
+        var p = profile(stage)
+        guard p.filters.indices.contains(index) else { return }
+        p.filters[index].enabled = enabled
+        setProfile(p, for: stage)
+    }
+
+    @discardableResult
+    public mutating func removeFilter(at index: Int, for stage: Stage) -> Bool {
+        var p = profile(stage)
+        guard p.filters.indices.contains(index) else { return false }
+        p.filters.remove(at: index)
+        setProfile(p, for: stage)
+        return profile(stage).filters.count == p.filters.count
+    }
+
+    /// Which band the editor should select after removing `index` from a list of
+    /// `count`: the one that slid into its place, or the new last band, rather
+    /// than nothing at all.
+    public static func selectionAfterRemoval(of index: Int, count: Int) -> Int? {
+        let remaining = count - 1
+        guard remaining > 0, index >= 0 else { return nil }
+        return min(index, remaining - 1)
     }
     public func referenceProfile(_ stage: Stage) -> PEQProfile {
         PEQEditDraft(global: originalGlobal, speaker: originalSpeaker, swapsOutputs: swapsOutputs).profile(stage)

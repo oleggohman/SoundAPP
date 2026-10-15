@@ -21,7 +21,10 @@ struct DevicesPanel: View {
             CZCard(title: "Input",
                    subtitle: "The interface carrying the bed. \(model.layout.name) needs \(model.layout.requiredInputChannels) channels.") {
                 CZSelect(label: "Input device",
-                         selection: $model.inputUID,
+                         selection: Binding(get: { model.inputUID }, set: { uid in
+                             model.inputUID = uid
+                             model.refreshDevices()
+                         }),
                          options: model.compatibleInputs.map { ($0.uid, deviceTitle($0)) })
                 if let d = model.inputDevice {
                     DeviceDetail(device: d, needed: model.layout.requiredInputChannels, isInput: true)
@@ -32,7 +35,10 @@ struct DevicesPanel: View {
             CZCard(title: "Output",
                    subtitle: "The stereo pair the bed folds down to. Devices with more than two outputs are fine — the first pair is used.") {
                 CZSelect(label: "Output device",
-                         selection: $model.outputUID,
+                         selection: Binding(get: { model.outputUID }, set: { uid in
+                             model.outputUID = uid
+                             model.refreshDevices()
+                         }),
                          options: model.compatibleOutputs.map { ($0.uid, deviceTitle($0)) })
                 if let d = model.outputDevice {
                     DeviceDetail(device: d, needed: 2, isInput: false)
@@ -83,6 +89,7 @@ struct DevicesPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .onAppear { model.refreshDevices() }
     }
 
     private func deviceTitle(_ d: AudioDevice) -> String {

@@ -124,6 +124,16 @@
 </ul>
 <hr>
 
+<h3>The Graphical PEQ Editor</h3>
+<p><strong>Output EQ &rarr; Response &rarr; Expand &amp; edit PEQ</strong> opens a full-screen plot of the selected profile's filters, where bands are edited by dragging rather than by typing.</p>
+<ul>
+<li>Drag a numbered band to move it: vertically for gain, horizontally for frequency. Hold <strong>Shift</strong> to lock the drag to whichever axis you have moved furthest along. Bands keep their numbering, so dragging one past another never renumbers either.</li>
+<li>Each row in the band list has its own mute and delete control, and the <strong>Delete</strong> key removes the selected band once the list has focus. Nothing is destroyed for good: <strong>Reset</strong> restores deleted bands along with every other unapplied edit.</li>
+<li><strong>Audition live</strong>, on by default, sends the draft to the running processor as you edit, so you can tune by ear. Nothing is written to the EQ text or the profile library until <strong>Apply</strong>, and <strong>Cancel</strong> &mdash; or closing the window any other way &mdash; puts the audio back to the EQ you started with. Edits ramp over a few hundred milliseconds rather than stepping, so a large drag does not click; after a fast flick the sound therefore lags the plot a little.</li>
+<li>The profile picker in the header loads another profile without leaving the editor. A draft with unapplied edits asks whether to apply or discard first, and the measured response and target curve follow the switch.</li>
+<li>While EQ bypass is on nothing is auditioned &mdash; bypass still means bypass.</li>
+</ul>
+
 <h2>4. Monitoring & Protection</h2>
 
 <h3>The True-Peak Limiter</h3>

@@ -686,7 +686,7 @@ do {
           "a flat empty profile can gain its first editable band")
 }
 
-section("Vertical PEQ editing, Reset and repeated Apply")
+section("Gain-only PEQ editing, Reset and repeated Apply")
 do {
     let source = "# original\nPreamp: -3 dB\nFilter 1: ON PK Fc 1234.567 Hz Gain -2 dB Q 1.234"
     var draft = PEQEditDraft(global: source, speaker: "", swapsOutputs: false)
@@ -715,6 +715,169 @@ do {
     near(draft.profile(.global).filters[0].gainDB, 24, 1e-12, "drag gain is bounded")
     draft.setGain(.nan, at: 0, for: .global)
     near(draft.profile(.global).filters[0].gainDB, 24, 1e-12, "non-finite drag gain is ignored")
+}
+
+section("Horizontal PEQ editing sets frequency through the log axis")
+do {
+    let source = "Preamp: 0 dB\nFilter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1.5\nFilter 2: ON PK Fc 4000 Hz Gain 3 dB Q 2"
+    let nyquistHalf = 23_520.0                       // 48 kHz × 0.49, as the editor clamps
+    var draft = PEQEditDraft(global: source, speaker: "", swapsOutputs: false)
+
+    draft.setFrequency(1037.4183, at: 0, for: .global, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[0].frequency, 1040, 1e-12,
+         "a drag above 1 kHz lands on a 10 Hz step, not 1037.4183 Hz")
+    near(draft.profile(.global).filters[0].gainDB, -2, 1e-12, "horizontal dragging cannot change gain")
+    near(draft.profile(.global).filters[0].q, 1.5, 1e-12, "horizontal dragging preserves bandwidth")
+    draft.setFrequency(63.49, at: 0, for: .global, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[0].frequency, 63, 1e-12, "below 1 kHz the step is 1 Hz")
+    draft.setFrequency(5, at: 0, for: .global, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[0].frequency, 20, 1e-12,
+         "a drag off the left edge clamps to 20 Hz, as the inspector field does")
+    draft.setFrequency(40_000, at: 0, for: .global, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[0].frequency, nyquistHalf, 1e-12,
+         "a drag past the caller's Nyquist limit clamps to it")
+    draft.setFrequency(.nan, at: 0, for: .global, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[0].frequency, nyquistHalf, 1e-12,
+         "a non-finite frequency is ignored")
+
+    draft.setBand(at: 1, for: .global, gainDB: -6, frequency: 2500, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[1].gainDB, -6, 1e-12, "a two-axis drag sets gain")
+    near(draft.profile(.global).filters[1].frequency, 2500, 1e-12, "and frequency in the same move")
+    near(draft.profile(.global).filters[0].frequency, nyquistHalf, 1e-12, "without disturbing the other bands")
+
+    // Band order is deliberately fixed: dragging one band past another changes
+    // nothing acoustically, so renumbering the points would only make the one
+    // under the cursor jump.
+    draft.setFrequency(100, at: 1, for: .global, maxFrequency: nyquistHalf)
+    near(draft.profile(.global).filters[1].frequency, 100, 1e-12,
+         "a band can be dragged below its neighbour")
+    near(draft.profile(.global).filters[0].frequency, nyquistHalf, 1e-12,
+         "and the list keeps its order, so the numbering does not jump")
+    check(APOParser.parse(draft.globalText).firstProfile == draft.profile(.global),
+          "frequency edits survive serialization")
+}
+
+section("Band removal, muting and the selection that follows")
+do {
+    let source = "Preamp: -1 dB\nFilter 1: ON PK Fc 100 Hz Gain 1 dB Q 1\nFilter 2: ON PK Fc 1000 Hz Gain 2 dB Q 1\nFilter 3: ON PK Fc 8000 Hz Gain 3 dB Q 1"
+    var draft = PEQEditDraft(global: source, speaker: "", swapsOutputs: false)
+
+    check(draft.removeFilter(at: 1, for: .global), "a row deletes its own band")
+    check(draft.profile(.global).filters.count == 2, "the list shrinks by one")
+    near(draft.profile(.global).filters[1].frequency, 8000, 1e-12,
+         "the band below slides up into the gap")
+    check(!draft.removeFilter(at: 7, for: .global), "a stale index removes nothing")
+
+    check(PEQEditDraft.selectionAfterRemoval(of: 1, count: 3) == 1,
+          "the selection follows the band that took the deleted one's place")
+    check(PEQEditDraft.selectionAfterRemoval(of: 2, count: 3) == 1,
+          "deleting the last band selects the new last one")
+    check(PEQEditDraft.selectionAfterRemoval(of: 0, count: 1) == nil,
+          "deleting the only band is the one case that clears the selection")
+
+    draft.setEnabled(false, at: 0, for: .global)
+    check(draft.profile(.global).filters[0].enabled == false,
+          "a band can be silenced instead of destroyed")
+    check(APOParser.parse(draft.globalText).firstProfile.filters[0].enabled == false,
+          "the mute survives serialization")
+
+    draft.reset()
+    check(draft.globalText == source && draft.profile(.global).filters.count == 3,
+          "Reset restores deleted bands — deletion is a draft edit, not a final one")
+}
+
+section("Live audition ramps toward the draft instead of stepping to it")
+do {
+    let flat = PEQProfile(preampDB: 0, filters: [PEQFilter(frequency: 1000, gainDB: 0, q: 1)])
+    var target = flat
+    target.filters[0].gainDB = 12
+    target.preampDB = -6
+
+    var current = flat, ticks = 0, worstGainStep = 0.0
+    while current != target && ticks < 500 {
+        let next = PEQAudition.step(current, toward: target)
+        worstGainStep = max(worstGainStep,
+                            abs(next.filters[0].gainDB - current.filters[0].gainDB),
+                            abs(next.preampDB - current.preampDB))
+        current = next
+        ticks += 1
+    }
+    check(current == target, "the audition arrives at the draft exactly", "after \(ticks) ticks")
+    check(worstGainStep <= PEQAudition.maxGainStepDB + 1e-12,
+          "no tick moves gain by more than the stated cap", "worst \(fmt(worstGainStep)) dB")
+    check(ticks == 8, "a 12 dB flick lands in eight ticks — under half a second at 25 Hz",
+          "got \(ticks)")
+
+    var swept = flat
+    swept.filters[0].frequency = 8000                 // three octaves
+    current = flat; ticks = 0
+    var worstOctaves = 0.0
+    while current != swept && ticks < 500 {
+        let next = PEQAudition.step(current, toward: swept)
+        worstOctaves = max(worstOctaves,
+                           abs(log2(next.filters[0].frequency / current.filters[0].frequency)))
+        current = next
+        ticks += 1
+    }
+    check(current == swept, "a frequency drag converges exactly too", "after \(ticks) ticks")
+    check(worstOctaves <= PEQAudition.maxFrequencyStepOctaves + 1e-12,
+          "no tick moves frequency by more than a quarter octave",
+          "worst \(fmt(worstOctaves)) octaves")
+
+    // Structural edits have nothing to interpolate between, and are also the
+    // ones that do not produce a loud step.
+    var added = flat
+    added.filters.append(PEQFilter(frequency: 200, gainDB: 9, q: 1))
+    check(PEQAudition.step(flat, toward: added) == added, "adding a band snaps")
+    var muted = flat
+    muted.filters[0].enabled = false
+    check(PEQAudition.step(flat, toward: muted) == muted, "switching a band off snaps")
+    var reshaped = flat
+    reshaped.filters[0].kind = .lowShelf
+    check(PEQAudition.step(flat, toward: reshaped) == reshaped, "changing the filter kind snaps")
+
+    let from = PEQAudition.Stages(global: flat, left: flat, right: flat)
+    let to = PEQAudition.Stages(global: target, left: flat, right: target)
+    var stages = from, stageTicks = 0
+    while stages != to && stageTicks < 500 { stages = stages.stepped(toward: to); stageTicks += 1 }
+    check(stages == to, "all three stages converge together", "\(stageTicks) ticks")
+    check(from.stepped(toward: from) == from, "an unchanged draft costs nothing")
+}
+
+section("One audition tick fits in the control-thread budget")
+do {
+    // The editor coalesces drag events onto a 25 Hz tick. Each tick costs one
+    // SoundMixProcessor.apply, which allocates a render state and rebuilds every
+    // biquad chain, the limiter and the delay buffers.
+    let bands = (0..<12).map {
+        PEQFilter(frequency: 40 * pow(2, Double($0) / 2), gainDB: Double($0) - 6, q: 1.2)
+    }
+    var config = ProcessorConfiguration(layout: .nativeBed, recipe: .reference)
+    config.globalPEQ = PEQProfile(preampDB: -6, filters: bands)
+    config.speakerPEQLeft = PEQProfile(preampDB: -1, filters: bands)
+    config.speakerPEQRight = PEQProfile(preampDB: -1, filters: bands)
+
+    func cost(_ base: ProcessorConfiguration, _ label: String) -> Double {
+        let processor = SoundMixProcessor()
+        processor.prepare(sampleRate: sr)
+        var config = base
+        let applies = 250                              // ten seconds of dragging
+        let start = Date()
+        for i in 0..<applies {
+            config.globalPEQ.filters[0].gainDB = Double(i % 12) - 6
+            processor.apply(config)
+        }
+        let ms = Date().timeIntervalSince(start) / Double(applies) * 1000
+        print(String(format: "       %@: %.2f ms per rebuild, %.1f%% of a 40 ms tick", label, ms, ms / 40 * 100))
+        return ms
+    }
+
+    check(cost(config, "matrix fold") < 4,
+          "a matrix-fold tick costs a small fraction of the 40 ms budget")
+    var binaural = config
+    binaural.binaural = .virtualSpeakers
+    check(cost(binaural, "binaural fold") < 8,
+          "a binaural tick stays bounded too — the bank is cached, not regenerated")
 }
 
 section("Limiter channel isolation and live handoff")

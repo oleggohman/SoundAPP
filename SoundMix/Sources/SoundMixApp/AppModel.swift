@@ -89,6 +89,14 @@ final class AppModel: ObservableObject {
     let library = EQProfileLibrary()
     private var meterTimer: Timer?
 
+    /// True while the plot editor is auditioning an uncommitted draft, so the
+    /// headroom readouts describe what is being heard rather than what is saved.
+    @Published private(set) var auditioningPEQ = false
+    private var audition: PEQAuditionState?
+    private var auditionTimer: Timer?
+    /// One rebuild per tick at most, however fast the mouse moves.
+    static let auditionTickSeconds = 1.0 / 25
+
     init() {
         devices = directory.devices
         inputUID = devices.first(where: { $0.isDefaultInput && $0.hasInput })?.uid
@@ -209,9 +217,11 @@ final class AppModel: ObservableObject {
 
     var gainBreakdown: String {
         let cfg = configuration
-        return String(format: "Fold trim %+.1f dB · manual %+.1f dB · global EQ preamp %+.1f dB · speaker preamps L %+.1f / R %+.1f dB. EQ filters add their own frequency-dependent boosts and cuts.",
-                      cfg.automaticTrimDB, cfg.manualGainDB, cfg.globalPEQ.preampDB,
-                      cfg.speakerPEQLeft.preampDB, cfg.speakerPEQRight.preampDB)
+        let eq = auditionedEQStages
+        return String(format: "Fold trim %+.1f dB · manual %+.1f dB · global EQ preamp %+.1f dB · speaker preamps L %+.1f / R %+.1f dB.%@ EQ filters add their own frequency-dependent boosts and cuts.",
+                      cfg.automaticTrimDB, cfg.manualGainDB, eq.global.preampDB,
+                      eq.left.preampDB, eq.right.preampDB,
+                      auditioningPEQ ? " Auditioning an unsaved draft from the plot editor." : "")
     }
 
     func adjustManualGain(by delta: Double) {
@@ -330,6 +340,9 @@ final class AppModel: ObservableObject {
     /// a device or buffer change silently did nothing until you stopped and
     /// started by hand.
     func applyLive() {
+        // Whatever the plot editor was auditioning, this push carries the
+        // committed EQ; a lagging audition tail would overwrite it a tick later.
+        discardPEQAudition()
         guard state.isRunning else { return }
         if needsRestartToApply {
             append("Reopening the audio stream to apply the new device or buffer settings…")
@@ -362,9 +375,130 @@ final class AppModel: ObservableObject {
             config.speakerPEQRight = config.swapOutputs ? left : right
             engine.apply(config)
         }
+        // The editor stays open and may keep auditioning: the committed EQ is
+        // now what the engine has, so the audition restarts from it rather than
+        // walking back from wherever the ramp had got to.
+        if audition != nil { audition = PEQAuditionState(current: committedEQStages,
+                                                         draft: committedEQStages,
+                                                         globalText: globalPEQText,
+                                                         speakerText: speakerPEQText) }
         save()
         append("Applied graphical PEQ edits.")
         return true
+    }
+
+    // MARK: - Live PEQ audition
+
+    /// What the engine is being fed while the plot editor auditions a draft,
+    /// and where it is headed.
+    private struct PEQAuditionState {
+        /// The EQ the engine has right now; `draft` is where it is walking to.
+        var current: PEQAudition.Stages
+        var draft: PEQAudition.Stages
+        /// The draft in APO text, so the headroom readouts describe what is heard.
+        var globalText: String
+        var speakerText: String
+        /// Set by Cancel/Close: walk back to the committed EQ and then let go.
+        var ending = false
+    }
+
+    /// The committed EQ, as the processor renders it: three stages in
+    /// physical-ear terms, flat while bypass is on.
+    private var committedEQStages: PEQAudition.Stages {
+        let speakers = speakerProfiles
+        return .init(global: globalProfile, left: speakers.left, right: speakers.right)
+    }
+
+    /// The EQ the engine is actually rendering — the auditioned draft while the
+    /// plot editor is live, the committed text otherwise.
+    var auditionedEQStages: PEQAudition.Stages {
+        guard let a = audition, !a.ending, !eqBypassed else { return committedEQStages }
+        return a.draft
+    }
+    var auditionedPEQText: (global: String, speaker: String) {
+        guard let a = audition, !a.ending else { return (globalPEQText, speakerPEQText) }
+        return (a.globalText, a.speakerText)
+    }
+
+    /// Feed the plot editor's draft to the running processor. Nothing is written
+    /// to `globalPEQText`, `speakerPEQText` or the profile library; only the
+    /// render state changes, and `endPEQAudition` puts it back.
+    ///
+    /// Called on every drag event. The work is coalesced onto a 25 Hz tick, so a
+    /// drag at display rate costs one `SoundMixProcessor.apply` per 40 ms rather
+    /// than one per mouse event.
+    func auditionPEQDraft(_ draft: PEQEditDraft) {
+        guard state.isRunning, draft.warnings.isEmpty else { return }
+        let stages = PEQAudition.Stages(global: draft.profile(.global),
+                                        left: draft.profile(.left),
+                                        right: draft.profile(.right))
+        if audition == nil {
+            audition = PEQAuditionState(current: committedEQStages, draft: stages,
+                                        globalText: draft.globalText,
+                                        speakerText: draft.speakerText)
+            auditioningPEQ = true
+        } else {
+            audition?.draft = stages
+            audition?.globalText = draft.globalText
+            audition?.speakerText = draft.speakerText
+            audition?.ending = false
+        }
+        startAuditionTimer()
+    }
+
+    /// Cancel, Close, or the audition toggle going off: walk the engine back to
+    /// the committed EQ and release it. The ramp is the same bounded one the
+    /// edits used, so undoing a big drag does not click either.
+    func endPEQAudition() {
+        guard audition != nil else { return }
+        audition?.ending = true
+        startAuditionTimer()
+    }
+
+    /// Drop the audition outright, for when a full configuration push is about
+    /// to carry the committed EQ anyway.
+    private func discardPEQAudition() {
+        guard audition != nil else { return }
+        audition = nil
+        auditioningPEQ = false
+        stopAuditionTimer()
+    }
+
+    private func auditionTick() {
+        guard var a = audition else { stopAuditionTimer(); return }
+        guard state.isRunning else { discardPEQAudition(); return }
+        // Bypass still means bypass: an auditioned draft is heard only when the
+        // EQ it belongs to is in circuit.
+        let target = a.ending || eqBypassed ? committedEQStages : a.draft
+        guard a.current != target else {
+            // Converged. The timer idles until the next edit; an ending
+            // audition has arrived at the pre-edit EQ and is finished.
+            if a.ending { discardPEQAudition() } else { stopAuditionTimer() }
+            return
+        }
+        a.current = a.current.stepped(toward: target)
+        audition = a
+        var config = engine.processor.configuration
+        config.globalPEQ = a.current.global
+        config.speakerPEQLeft = a.current.left
+        config.speakerPEQRight = a.current.right
+        engine.apply(config)
+    }
+
+    private func startAuditionTimer() {
+        guard auditionTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.auditionTickSeconds, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.auditionTick() }
+        }
+        // `.common` so the ticks keep arriving while a drag holds the run loop
+        // in event-tracking mode, which is exactly when they are needed.
+        RunLoop.main.add(timer, forMode: .common)
+        auditionTimer = timer
+    }
+
+    private func stopAuditionTimer() {
+        auditionTimer?.invalidate()
+        auditionTimer = nil
     }
 
     func syncRecipeEditors() {
@@ -448,10 +582,13 @@ final class AppModel: ObservableObject {
         return profiles.first { $0.id == id }
     }
 
-    /// Peak boost of what is currently in the editors — the headroom a profile costs.
+    /// Peak boost of what is currently being rendered — the headroom a profile
+    /// costs. While the plot editor auditions a draft, that draft is what is
+    /// being heard, so it is what this reports.
     var editorPeakBoostDB: Double {
         let rate = state.isRunning ? engine.currentSampleRate : 48_000
-        let draft = EQProfile(name: "", globalText: globalPEQText, speakerText: speakerPEQText)
+        let text = auditionedPEQText
+        let draft = EQProfile(name: "", globalText: text.global, speakerText: text.speaker)
         return draft.peakBoostDB(sampleRate: rate)
     }
 

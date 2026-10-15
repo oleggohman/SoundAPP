@@ -106,18 +106,7 @@ struct Sidebar: View {
                         .font(CZ.Typography.body(19, .semibold, display: true))
                         .foregroundStyle(CZ.Color.invertedText)
                 }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")")
-                        .font(CZ.Typography.ui(12, .semibold))
-                        .foregroundStyle(CZ.Color.invertedText)
-                    Text("Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
-                        .font(CZ.Typography.ui(11, .medium))
-                        .foregroundStyle(CZ.Color.invertedText.opacity(0.8))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(CZ.Color.white.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: CZ.Radius.tiny))
+
             }
             .padding(.horizontal, CZ.Spacing.lg)
             .padding(.top, CZ.Spacing.xl)
@@ -183,6 +172,9 @@ private struct SidebarSummary: View {
                 row("Latency", String(format: "%.1f ms", model.snapshot.latencyMS))
                 row("Rate", "\(Int(model.engine.currentSampleRate)) Hz")
             }
+            Divider().overlay(CZ.Color.mediumBlue.opacity(0.3))
+            row("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+            row("Build", Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
         }
         .padding(CZ.Spacing.md)
         .background(CZ.Color.white.opacity(0.05))

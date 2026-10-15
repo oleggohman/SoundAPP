@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Log-frequency magnitude plot. Traces are plain point lists, so a parametric
 /// EQ, a measured earphone curve and the sum of the two can share one set of
@@ -68,13 +69,21 @@ struct ResponseCurve: View {
     var showsReadout = true
     var onSelectPoint: ((Int) -> Void)? = nil
     var onChangeGain: ((Int, Double) -> Void)? = nil
+    /// Two-axis drag: gain from vertical movement, frequency from horizontal.
+    /// Either value is `nil` when that axis is locked for this drag, so the
+    /// editor can leave the other one exactly as it was rather than rewriting
+    /// it with a rounded copy of itself.
+    var onChangeBand: ((_ index: Int, _ gainDB: Double?, _ frequency: Double?) -> Void)? = nil
+    /// Highest frequency a point may be dragged to; the caller's Nyquist limit.
+    var maxDragFrequency: Double = ResponseCurve.maxHz
     var referenceLineDB: Double? = nil
     @State private var draggedPoint: Int?
     @State private var dragStartGain = 0.0
+    @State private var dragStartFrequency = 0.0
     @State private var hoverHz: Double?
 
-    private static let minHz = 20.0
-    private static let maxHz = 20_000.0
+    static let minHz = 20.0
+    static let maxHz = 20_000.0
     private static let gridHz: [Double] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10_000, 20_000]
     /// Fixed so the panel cannot stretch across the plot.
     private static let readoutWidth: CGFloat = 240
@@ -188,12 +197,27 @@ struct ResponseCurve: View {
                                     if draggedPoint != point.id {
                                         draggedPoint = point.id
                                         dragStartGain = point.gainDB
+                                        dragStartFrequency = point.frequency
                                     }
                                     let gain = dragStartGain - Double(value.translation.height / max(h, 1)) * span
-                                    onChangeGain?(point.id, gain)
+                                    guard onChangeBand != nil else {
+                                        onChangeGain?(point.id, gain)
+                                        return
+                                    }
+                                    // Shift locks the drag to whichever axis it
+                                    // has travelled furthest along, because most
+                                    // edits are deliberately one or the other.
+                                    let locked = NSEvent.modifierFlags.contains(.shift)
+                                    let horizontal = abs(value.translation.width) > abs(value.translation.height)
+                                    let hz = frequency(atX: x(dragStartFrequency, w) + value.translation.width, w)
+                                    onChangeBand?(point.id,
+                                                  locked && horizontal ? nil : gain,
+                                                  locked && !horizontal ? nil : min(hz, maxDragFrequency))
                                 }
                                 .onEnded { _ in draggedPoint = nil })
-                            .help("Band \(point.id + 1): drag vertically to change gain; frequency stays fixed")
+                            .help(onChangeBand == nil
+                                  ? "Band \(point.id + 1): drag vertically to change gain; frequency stays fixed"
+                                  : "Band \(point.id + 1): drag for gain and frequency; hold Shift to lock one axis")
                     }
 
                     // Crosshair and per-curve dots at the cursor frequency.

@@ -136,24 +136,41 @@ Upload it from either the profile detail or the Response card.
 In **Output EQ → Response**, click **Expand & edit PEQ** for a native full-screen
 editor. Use the green window control to return to a resizable window.
 
-- Choose **Global**, **Speaker L**, or **Speaker R**.
-- Drag a numbered band vertically to change gain. Horizontal dragging never
-  changes frequency; use the frequency field for deliberate frequency edits.
-- Select a band to adjust Q, filter type, or enabled state. Add/delete bands and
-  adjust the stage preamp with the controls beside the plot.
+- Choose **Global**, **Speaker L**, or **Speaker R**, and switch EQ profile from the
+  picker beside it without leaving the editor. A draft with unapplied edits asks
+  whether to apply or discard before the switch; the measured response and target
+  follow it.
+- Drag a numbered band for gain (vertically) and frequency (horizontally). Hold
+  **Shift** to lock the drag to whichever axis it has travelled furthest along.
+  A dragged frequency lands on a 1 Hz step below 1 kHz and a 10 Hz step above,
+  clamped to 20 Hz … half Nyquist as the frequency field is. Bands keep their list
+  order, so dragging one past another never renumbers either.
+- Select a band to adjust Q, filter type, or enabled state. Each row in the band
+  list carries its own mute and delete control, and the **Delete** key removes the
+  selected band once the list has focus. Add bands and adjust the stage preamp
+  with the controls beside the plot.
+- **Audition live** (on by default) sends the draft to the running processor as you
+  edit, so the plot and the sound agree while you tune. Nothing is written to the
+  EQ text, the profile or the library until **Apply**. Edits ramp over a few
+  hundred milliseconds instead of stepping, so a large drag does not click — the
+  sound lags the plot slightly after a fast flick. Bypass still means bypass:
+  nothing is auditioned while the EQ is switched out.
 - The orange dashed reference shows the EQ when the editor opened, or at the last
   Apply. The horizontal dashed line marks 0 dB. The lower plot previews the combined
   result against the measured response and target, when loaded.
 - **Reset** discards unapplied edits across all three stages.
 - **Apply** updates the current EQ and running audio while keeping the editor open.
-  **Apply & close** also closes it. **Cancel** discards edits since the last Apply.
+  **Apply & close** also closes it. **Cancel**, or closing the window by any other
+  means, discards edits since the last Apply and returns the audio to the EQ that
+  was running before the editor opened.
 
 Use **Save** in the main profile library to keep the applied EQ in that profile.
 Bypass is preserved. Speaker editing follows physical L/R routing, including swapped
 outputs. Edits preserve other channels, disabled filters, preamps and numeric
 precision. Edited documents are rewritten in supported APO syntax; their comments
 and formatting are not retained. Resolve parser warnings in the text editor first.
-If the profile changes in the main window, reopen the graphical editor before applying.
+If the EQ changes in the main window while the editor is open, editing is suspended
+until you reload the draft from it — the editor offers that in place of the warning.
 
 ## Binaural / HRTF fold
 

@@ -135,66 +135,76 @@ tests; and it is documented, limits included.
 
 ## Audition PEQ plot edits live while editing
 
-Status: Not started. Planned only.
+Status: Completed. Implemented 2026-10-15; 347 automated checks pass (288 DSP, 59 offline).
 
-The graphical PEQ editor is draft-only: `PEQPlotEditor` keeps a `PEQEditDraft` and nothing
-reaches the engine until **Apply** calls `model.applyPEQDraft(draft)`. Dragging a band
-therefore changes the picture and not the sound, which is the wrong way round for an editor
-whose whole purpose is to tune by ear. Edits should be audible as they are made, while
-staying a draft on disk.
+The graphical editor was draft-only: dragging a band changed the picture and not the sound,
+which is the wrong way round for an editor whose purpose is to tune by ear. Edits are now
+audible as they are made and still a draft until Apply.
 
-- [ ] Push the draft's combined profiles (`draft.combined(.left)` / `.right` and the global stage) to the running processor as the user drags, without rewriting the APO text, marking the library profile dirty, or changing `model.globalPEQText` / `speakerPEQText`.
-- [ ] Keep the existing commit semantics intact: Apply still rewrites the text, Reset still returns to the state at open or last Apply, and Cancel/Close must restore the engine to exactly the pre-edit EQ — including when the window is closed by other means.
-- [ ] Coalesce updates. `SoundMixProcessor.apply` allocates a fresh render state and rebuilds every biquad chain, the limiter and the delay buffers; a drag at display rate would do that 60 times a second. Throttle or mark-dirty-and-flush on a tick, and confirm the control-thread cost is bounded.
-- [ ] Deal with coefficient jumps. History is inherited across an apply, so state is continuous, but the coefficients step — a large gain drag will click. Decide between a short ramp, a crossfade between two chains, or accepting stepped audio, and state the choice.
-- [ ] Make the live path respect the editor's existing guards: no preview while `draft.warnings` is non-empty, and no preview while `conflict` is true (the main window changed the EQ underneath the editor).
-- [ ] Keep the headroom and limiter readouts honest during the preview, since a preamp drag changes available headroom immediately.
-- [ ] Decide whether live audition is a toggle in the editor (recommended, default on, labelled as auditioning an unsaved draft) or unconditional.
-- [ ] Verify the A/B bypass control and the per-stage hide/solo state still mean what they say while a preview is active.
+### Decisions taken, which the plan left open
 
-Acceptance: Dragging a band or changing preamp in the plot editor is heard immediately with
-no clicking beyond the stated tolerance, no measurable change in render-thread cost,
-cancelling leaves the engine exactly as it was before the editor opened, and nothing is
-written to the profile library until Apply.
+- **Three stages pushed separately, not a combined profile.** The chain is
+  fold → global PEQ → swap → speaker PEQ → limiter, so combining the global and ear
+  profiles would put the global stage on the wrong side of `swapOutputs`. The audition
+  pushes `globalPEQ`, `speakerPEQLeft` and `speakerPEQRight` exactly as `applyPEQDraft`
+  does, with `PEQEditDraft.profile(.left)` already resolved to the physical ear.
+- **Coefficient steps: a control-rate ramp, not a crossfade.** A crossfade between two
+  chains or a coefficient ramp both mean extra work inside the one render path that every
+  fold, the limiter and the offline renderer share, and that path is the verified core.
+  Instead the audible EQ walks toward the draft on the control thread in bounded steps —
+  1.5 dB and a quarter octave per tick, 37.5 dB/s and 6.25 octaves/s at 25 Hz — and the
+  render thread does exactly what it did before. Dragging at a human speed is therefore
+  exact, because each tick's change is far below the cap; a flick, a typed value or a
+  Cancel after a big edit arrives over a few hundred milliseconds instead of clicking, so
+  the sound can lag the plot briefly after a flick. Structural edits — adding, deleting,
+  retyping or muting a band — have nothing to interpolate between and snap, and they are
+  also the edits that do not produce a loud step. `PEQAudition` holds this, and it returns
+  the target exactly once it is within one step, so convergence is an equality test.
+- **A toggle, default on**, labelled "Audition live" and described in the footer as
+  auditioning a draft that Cancel will undo.
+
+- [x] Push the draft's profiles to the running processor as the user drags, without rewriting the APO text, marking the library profile dirty, or changing `model.globalPEQText` / `speakerPEQText`. `AppModel.auditionPEQDraft` touches the render state and nothing else.
+- [x] Commit semantics intact: Apply still rewrites the text (and re-bases the audition on it so the ramp does not walk backwards), Reset still returns to the state at open or last Apply, and Cancel — or the close button, ⌘W or the window going away by any other route, through `windowWillClose` — walks the engine back to the pre-edit EQ. `applyLive` drops an audition outright, since the full configuration it pushes already carries the committed EQ.
+- [x] Updates coalesced onto a 25 Hz tick, so a drag at display rate costs one rebuild per 40 ms rather than one per mouse event. Control-thread cost measured in the suite: **0.01 ms** per rebuild for the matrix fold and **0.03 ms** for the binaural fold, against a 40 ms budget. The timer runs in `.common` mode so the ticks keep arriving while a drag holds the run loop in event-tracking mode, and it stops once the audition has converged.
+- [x] Coefficient jumps decided and implemented; see above.
+- [x] The live path respects the editor's guards: no audition while `draft.warnings` is non-empty or `conflict` is true, and none while playback is stopped.
+- [x] Headroom and limiter readouts stay honest: `editorPeakBoostDB` and `gainBreakdown` report the auditioned draft while one is live, and the editor's own footer shows the draft's peak EQ boost beside the live limiter state. The footer figure is recomputed when the draft changes rather than when the view redraws, which the meters make it do thirty times a second.
+- [x] Live audition is a toggle, default on.
+- [x] A/B bypass still means bypass — while `eqBypassed` is set the audition target is the committed (flat) EQ, re-read every tick, so toggling bypass under a live audition follows. The plot's legend hide/solo is drawing state only and never reached the audio.
+
+Acceptance met for everything testable without a GUI: nothing is written to the profile
+library until Apply, the ramp is bounded and converges exactly, and the control-thread cost
+is three orders of magnitude inside the tick budget. The interactive half — that dragging is
+heard immediately and that cancelling leaves the engine as it was — is verified by
+construction and review rather than by use, because this environment cannot launch the app.
 
 ## Make the PEQ plot editor a complete editor
 
-Status: Not started. Planned only.
-
-Three gaps in `PEQPlotEditor`, all of which force the user back to the inspector fields or
-to the main window for things the plot should handle directly.
+Status: Completed. Implemented 2026-10-15; same suite run.
 
 ### Drag points horizontally to set frequency
 
-`ResponseCurve` exposes `onChangeGain(index:gain:)` and nothing else, so horizontal
-movement is discarded — the editor even says so twice ("frequency locked", "horizontal
-movement is ignored").
-
-- [ ] Add a frequency channel to the plot's drag handling (`onChangeBand(index:frequency:gainDB:)` or a second callback) and a `setFrequency` on `PEQEditDraft` beside `setGain`, keeping the existing gain-only path working.
-- [ ] Map horizontal pixels through the plot's logarithmic frequency axis, clamp to 20 Hz … Nyquist/2 as the inspector field already does, and quantise sensibly so a drag does not produce 1037.4183 Hz.
-- [ ] Decide how dragging interacts with band order: APO filters are a list, and moving one past another changes nothing acoustically but makes the numbered points jump. Either keep the list order fixed or re-sort and renumber consistently, and say which.
-- [ ] Offer a modifier to constrain a drag to one axis, since most edits are deliberately gain-only or frequency-only, and update the plot's caption, which currently advertises the restriction.
+- [x] `ResponseCurve` gained `onChangeBand(index:gainDB:frequency:)` beside the existing `onChangeGain`, which still works for any caller that only wants gain. `PEQEditDraft.setBand` takes either axis or both, with `setGain` and `setFrequency` as the one-axis spellings.
+- [x] Horizontal pixels map through the plot's own log axis — the drag converts the band's start frequency to x, adds the translation, and converts back — clamped to 20 Hz … the caller's Nyquist/2 exactly as the inspector field is, and quantised to 1 Hz below 1 kHz and 10 Hz above, so a drag lands on 1040 Hz rather than 1037.4183 Hz.
+- [x] **Band order is kept fixed.** APO filters are a list and the plot numbers the points by position, so re-sorting would renumber the point under the cursor mid-drag. Dragging one band past another therefore changes nothing but that band's frequency. Said so in the inspector hint, the README and the help.
+- [x] **Shift** locks a drag to whichever axis it has travelled furthest along. The plot caption, the per-point tooltip and the inspector hint all describe the new behaviour; the "frequency locked" and "horizontal movement is ignored" captions are gone.
 
 ### Choose the EQ profile from inside the editor
 
-The editor opens on whatever the main window had selected and treats any change made behind
-it as a `conflict` that disables editing. Switching profile means closing, switching, reopening.
-
-- [ ] Put the profile library's picker in the editor's header, bound to the same selection the main window uses.
-- [ ] Define what switching does to unapplied edits: offer Apply, discard or cancel rather than silently dropping the draft, and re-seed the draft from the newly selected profile.
-- [ ] Keep the conflict guard meaningful: a switch made deliberately in the editor must not read as an external change, while a change actually made in the main window still must.
-- [ ] Make the measured response and target curves follow the switch, since the result plot is drawn from the selected profile's measurement.
+- [x] The profile library's picker sits in the editor header, bound to the same `model.selectedProfileID` the main window uses.
+- [x] Switching with unapplied edits asks first — apply them and switch, discard and switch, or stay — and the draft is re-seeded from the newly selected profile either way.
+- [x] The conflict guard still means an external change: the editor's own switch updates the selection it compares against and re-seeds the draft, so only a change made in the main window trips it. A conflict is also no longer a dead end — the warning now carries a "Discard draft and reload" button instead of telling the user to close and reopen the window.
+- [x] The measured response and target follow the switch: `selectProfile` loads them into the model and the result plot is drawn from the model, so the lower plot redraws against the new profile's measurement.
 
 ### Delete a band from the list
 
-Deletion today is a single button that acts on the selected band only.
+- [x] Every row in the band list has its own delete control, and the list takes the **Delete** key for the selected row once it has focus. The single Delete button beside Add band stays.
+- [x] Selection after a removal follows the band that slid into the gap, or the new last band; `PEQEditDraft.selectionAfterRemoval` decides it and is covered by the suite. Only deleting the last remaining band clears the selection.
+- [x] Deletion is a draft edit like any other, so Reset restores deleted bands — asserted in the suite rather than assumed.
+- [x] Enable/disable is mirrored on each row as a mute control, so a band can be silenced without being destroyed, and the mute survives serialization.
 
-- [ ] Give each row in the band list its own delete control, and support the Delete key on the selected row.
-- [ ] Keep the selection and the numbering sane after a removal — select the next band rather than clearing the selection, which is what the current button does.
-- [ ] Make removal undoable within the editor: Reset already restores the state at open or last Apply, so deletion must be covered by it rather than being immediate and final.
-- [ ] Mirror the same affordance for enable/disable, so a band can be silenced without being destroyed.
-
-Acceptance: A band can be moved in both axes and deleted from its row, a different profile
-can be loaded without leaving the editor, every one of those edits is still a draft that
-Reset restores and only Apply commits, and the captions no longer describe restrictions
-that have been lifted.
+Acceptance met: a band can be moved in both axes and deleted from its row, another profile
+can be loaded without leaving the editor, every one of those edits is a draft that Reset
+restores and only Apply commits, and no caption describes a restriction that has been lifted.
+The same GUI caveat as the section above applies — the interactions are verified by
+construction and by the `SoundMixCore` checks underneath them, not by driving the app.
