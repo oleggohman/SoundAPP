@@ -1284,6 +1284,44 @@ do {
     }
 }
 
+section("Bundled target references")
+do {
+    let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("Resources/Targets")
+    var loaded: [BuiltInTarget: FrequencyResponse] = [:]
+    for target in BuiltInTarget.allCases {
+        do {
+            let curve = try target.load(from: directory)
+            loaded[target] = curve
+            check(curve.name == target.name && curve.points.count > 400,
+                  "\(target.name) loads from the offline resource")
+            check(curve.range.low <= 20 && curve.range.high >= 19000,
+                  "\(target.name) covers the audible comparison range")
+            check(curve.points.allSatisfy { $0.hz.isFinite && $0.db.isFinite && $0.hz > 0 },
+                  "\(target.name) has finite positive frequency samples")
+            let normalized = curve.normalized()
+            check(normalized.difference(from: normalized).allSatisfy { abs($0.db) < 1e-9 },
+                  "\(target.name) matches itself in error view")
+        } catch {
+            check(false, "\(target.name) loads", error.localizedDescription)
+        }
+    }
+    near(loaded[.jm1]?.magnitudeDB(at: 20) ?? -999, 4.538, 1e-9,
+         "JM-1 retains the downloaded Harman-filter variant")
+    near(loaded[.harmanIEM]?.magnitudeDB(at: 20) ?? -999, 7.61, 1e-9,
+         "Harman IEM retains the published bass rise")
+    if let neutral = loaded[.iefNeutral], let bass = loaded[.iefNeutralBass] {
+        check(bass.magnitudeDB(at: 20) > neutral.magnitudeDB(at: 20) + 5,
+              "IEF Neutral and bass variants remain distinct")
+    }
+    do {
+        _ = try BuiltInTarget.jm1.load(from: directory.appendingPathComponent("missing"))
+        check(false, "missing target returns an error instead of a fabricated curve")
+    } catch {
+        check(true, "missing target returns an error instead of a fabricated curve")
+    }
+}
+
 print("\n\(checks - failures)/\(checks) checks passed")
 if failures > 0 { print("\(failures) FAILED"); exit(1) }
 print("All DSP checks passed.")

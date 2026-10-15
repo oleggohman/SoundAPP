@@ -45,6 +45,21 @@ struct PEQPlotEditor: View {
     @State private var hiddenPreview: Set<String> = []
     @State private var mode: AppModel.PlotMode
     @State private var message: String?
+    /// Target selection only changes this preview; it never alters the profile or audio.
+    @State private var targetChoice = "profile"
+    private static let bundledTargets: [BuiltInTarget: FrequencyResponse] = {
+        guard let directory = BuiltInTarget.bundledDirectory() else { return [:] }
+        return Dictionary(uniqueKeysWithValues: BuiltInTarget.allCases.compactMap { target in
+            guard let curve = try? target.load(from: directory) else { return nil }
+            return (target, curve)
+        })
+    }()
+    private var previewTarget: FrequencyResponse? {
+        if targetChoice == "profile" { return model.target }
+        guard let target = BuiltInTarget(rawValue: targetChoice) else { return nil }
+        return Self.bundledTargets[target]
+    }
+    private var canShowTargetError: Bool { previewTarget != nil && model.hasMeasurement }
     /// Default on: an editor you tune by ear has to be audible while you tune it.
     @State private var auditionLive = true
     /// A profile the user picked while the draft still held unapplied edits.
@@ -141,24 +156,44 @@ struct PEQPlotEditor: View {
                                       maxDragFrequency: maxFrequency, referenceLineDB: 0)
                             .disabled(!editable)
                         HStack {
-                            Text(mode == .errorVsTarget && model.canShowErrorView
+                            Text(mode == .errorVsTarget && canShowTargetError
                                  ? "Draft result · deviation from target (dB)" : "Draft result · normalized response / EQ gain (dB)")
                                 .font(.system(size: 14, weight: .medium))
                             Spacer()
-                            if model.canShowErrorView {
+                            if canShowTargetError {
                                 Picker("View", selection: $mode) {
                                     ForEach(AppModel.PlotMode.allCases) { Text($0.label).tag($0) }
                                 }.labelsHidden().frame(width: 200)
                             }
                         }
+                        HStack(spacing: 12) {
+                            Picker("Target", selection: $targetChoice) {
+                                Text("Profile target").tag("profile")
+                                Text("None").tag("none")
+                                ForEach(BuiltInTarget.allCases) { Text($0.name).tag($0.rawValue) }
+                            }
+                            .frame(maxWidth: 380)
+                            .onChange(of: targetChoice) { _, _ in hiddenPreview.removeAll() }
+                            Text("Visual reference only · EQ unchanged")
+                                .font(.system(size: 12))
+                                .foregroundStyle(CZ.Color.mediumGray)
+                        }
+                        if let chosen = BuiltInTarget(rawValue: targetChoice), Self.bundledTargets[chosen] == nil {
+                            Text("The bundled target could not be loaded. Rebuild or reinstall the app.")
+                                .foregroundStyle(CZ.Color.red)
+                        } else if previewTarget != nil && !model.hasMeasurement {
+                            Text("Target shown for reference. Load an earphone measurement to compare the corrected response with it.")
+                                .font(.system(size: 12)).foregroundStyle(CZ.Color.mediumGray)
+                        }
                         ResponseCurve(traces: ResponsePlotTraces.make(model: model, rate: rate,
                                           global: draft.profile(.global),
-                                          speakers: (draft.profile(.left), draft.profile(.right)), mode: mode),
+                                          speakers: (draft.profile(.left), draft.profile(.right)), mode: mode, target: previewTarget),
                                       height: max(120, (geo.size.height - 350) * 0.4),
-                                      toleranceBandDB: model.canShowErrorView && mode == .errorVsTarget ? 3 : nil,
+                                      toleranceBandDB: canShowTargetError && mode == .errorVsTarget ? 3 : nil,
                                       hidden: $hiddenPreview)
                     }
-                    inspector.frame(width: 260)
+                    inspector(listHeight: min(480, max(280, geo.size.height * 0.42)))
+                        .frame(width: min(360, max(320, geo.size.width * 0.25)))
                 }
                 .padding(.vertical, 4)
                 }
@@ -261,7 +296,7 @@ struct PEQPlotEditor: View {
         message = "Reloaded from the main window."
     }
 
-    private var inspector: some View {
+    private func inspector(listHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Button("Add band", systemImage: "plus") {
@@ -300,54 +335,104 @@ struct PEQPlotEditor: View {
                     .font(.system(size: 14))
             }
             Divider()
-            bandList
-        }.disabled(!editable)
+            bandList(height: listHeight)
+        }
+        .padding(16)
+        .background(CZ.Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(CZ.Color.ghostGray))
+        .disabled(!editable)
     }
 
     /// Each row carries its own mute and delete, and the list takes the Delete
     /// key for the selected row once it has focus.
-    private var bandList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Bands").font(.system(size: 12, weight: .medium)).foregroundStyle(CZ.Color.mediumGray)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(profile.filters.enumerated()), id: \.offset) { index, filter in
-                        HStack(spacing: 6) {
-                            Button {
-                                selected = index
-                            } label: {
-                                Text(String(format: "%d · %.0f Hz · %+.1f dB", index + 1, filter.frequency, filter.gainDB))
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(selected == index ? CZ.Color.blue
-                                                     : (filter.enabled ? CZ.Color.darkBlue : CZ.Color.mediumGray))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                            Button {
-                                selected = index
-                                edit { $0.setEnabled(!filter.enabled, at: index, for: stage) }
-                            } label: {
-                                Image(systemName: filter.enabled ? "speaker.wave.2" : "speaker.slash")
-                                    .foregroundStyle(filter.enabled ? CZ.Color.darkBlue : CZ.Color.mediumGray)
+    private func bandList(height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Bands").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Text("\(profile.filters.count) bands")
+                    .font(.system(size: 12)).foregroundStyle(CZ.Color.mediumGray)
+            }
+            if profile.filters.isEmpty {
+                Text("No bands yet. Choose Add band to start shaping the EQ.")
+                    .font(.system(size: 13)).foregroundStyle(CZ.Color.mediumGray)
+                    .padding(.vertical, 20)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(Array(profile.filters.enumerated()), id: \.offset) { index, filter in
+                                bandRow(index, filter)
+                                    .id(index)
                             }
-                            .buttonStyle(.plain)
-                            .help(filter.enabled ? "Silence band \(index + 1) without deleting it"
-                                                 : "Switch band \(index + 1) back on")
-                            Button {
-                                remove(index)
-                            } label: {
-                                Image(systemName: "trash").foregroundStyle(CZ.Color.red)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Delete band \(index + 1). Reset restores it.")
-                        }
+                        }.padding(4)
                     }
-                }.padding(.trailing, 4)
-            }.frame(maxHeight: 180)
+                    .frame(height: height)
+                    .scrollIndicators(.visible)
+                    .onChange(of: selected) { _, index in
+                        if let index { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(index) } }
+                    }
+                }
+            }
+            Text("Select a band · speaker toggles on/off · Delete removes it")
+                .font(.system(size: 11)).foregroundStyle(CZ.Color.mediumGray)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .focusable()
+        .focusEffectDisabled()
         .onDeleteCommand { if let selected { remove(selected) } }
         .help("Select a band and press Delete to remove it. Reset restores deleted bands.")
+    }
+
+    private func bandRow(_ index: Int, _ filter: PEQFilter) -> some View {
+        HStack(spacing: 4) {
+            Button { selected = index } label: {
+                HStack(spacing: 7) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .frame(width: 26, height: 26)
+                        .background(selected == index ? CZ.Color.blue : CZ.Color.paleBlue)
+                        .foregroundStyle(selected == index ? CZ.Color.white : CZ.Color.darkBlue)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(String(format: "%.0f Hz", filter.frequency))
+                            .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        Text(String(format: "%+.1f dB", filter.gainDB) + (filter.enabled ? "" : " · OFF"))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(CZ.Color.mediumGray)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            Button {
+                selected = index
+                edit { $0.setEnabled(!filter.enabled, at: index, for: stage) }
+            } label: {
+                Image(systemName: filter.enabled ? "speaker.wave.2" : "speaker.slash")
+                    .font(.system(size: 14))
+                    .foregroundStyle(filter.enabled ? CZ.Color.darkBlue : CZ.Color.mediumGray)
+                    .frame(width: 32, height: 34).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(filter.enabled ? "Disable" : "Enable") band \(index + 1)")
+            .help(filter.enabled ? "Silence band \(index + 1) without deleting it" : "Enable band \(index + 1)")
+            Button { remove(index) } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 14)).foregroundStyle(CZ.Color.red)
+                    .frame(width: 32, height: 34).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete band \(index + 1)")
+            .help("Delete band \(index + 1). Reset restores it.")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 8)
+        .background(selected == index ? CZ.Color.lightestBlue : CZ.Color.paleBlue.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .stroke(selected == index ? CZ.Color.blue : Color.clear, lineWidth: 1))
     }
 
     /// Removal keeps the list usable: the band that slid into the gap is

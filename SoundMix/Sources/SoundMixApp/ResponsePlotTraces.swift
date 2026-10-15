@@ -4,7 +4,7 @@ import SwiftUI
 enum ResponsePlotTraces {
     static func make(model: AppModel, rate: Double,
                      global: PEQProfile, speakers: (left: PEQProfile, right: PEQProfile),
-                     mode: AppModel.PlotMode) -> [ResponseCurve.Trace] {
+                     mode: AppModel.PlotMode, target: FrequencyResponse?) -> [ResponseCurve.Trace] {
         func eqAsProfile(_ side: EQProfile.Side) -> PEQProfile {
             var p = global
             let speaker = side == .left ? speakers.left : speakers.right
@@ -20,15 +20,15 @@ enum ResponsePlotTraces {
                 .fromProfile("Speaker R", CZ.Color.pink, speakers.right,
                              sampleRate: rate, dashed: true),
             ]
-            if let t = model.target {
+            if let t = target {
                 out.insert(.init(label: "Target · \(t.name)", color: CZ.Color.red,
                                  points: t.normalized().sampled(), dashed: true), at: 0)
             }
             return out
         }
 
-        let errorMode = model.canShowErrorView && mode == .errorVsTarget
-        let reference = model.target?.normalized()
+        let errorMode = target != nil && mode == .errorVsTarget
+        let reference = target?.normalized()
 
         /// In error mode every curve is drawn as its distance from the target.
         func shape(_ curve: FrequencyResponse) -> [FrequencyResponse.Point] {

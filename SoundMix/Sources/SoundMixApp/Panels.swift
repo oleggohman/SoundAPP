@@ -880,7 +880,7 @@ private struct ResponseCard: View {
                 .font(CZ.Typography.caption)
                 .foregroundStyle(CZ.Color.mediumGray)
             ResponseCurve(traces: ResponsePlotTraces.make(model: model, rate: rate,
-                          global: model.globalProfile, speakers: model.speakerProfiles, mode: model.plotMode),
+                          global: model.globalProfile, speakers: model.speakerProfiles, mode: model.plotMode, target: model.target),
                           toleranceBandDB: (model.canShowErrorView
                                             && model.plotMode == .errorVsTarget) ? 3 : nil,
                           hidden: $model.hiddenTraces)

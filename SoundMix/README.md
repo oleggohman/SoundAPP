@@ -303,3 +303,20 @@ are disabled with an explanation. No device volume is changed on startup.
 
 Hardware setters are covered by mocked tests; actual connected-device capability
 and volume reads were verified without changing the user's volume.
+
+## Offline target previews
+
+In the enlarged PEQ editor, the **Target** menu below **Draft result** offers the
+profile target, no target, JM-1 with Harman filters, Harman IEM 2019, IEF / Crinacle
+Neutral, and IEF / Crinacle Neutral with bass. Selection affects this preview only;
+it does not change filters, audio, or the saved profile target. With a measurement
+loaded, the View menu also offers error versus the selected target.
+
+Target CSVs ship in `Resources/Targets` and are copied into the app and DMG, so no
+connection is required. Exact source revisions, URLs, checksums and MIT notices
+are included there. JM-1 is explicitly the Harman-filter variant from AutoEq.
+Use measurements and targets from compatible measurement systems; these reference
+curves do not convert between rigs.
+
+The editor's Bands panel now uses a wider card, larger rows, separate frequency
+and gain readouts, generous mute/delete buttons, and a taller scrollable list.

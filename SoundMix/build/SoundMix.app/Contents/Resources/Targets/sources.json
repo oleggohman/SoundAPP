@@ -1,0 +1,30 @@
+[
+  {
+    "file": "jm1-harman.csv",
+    "source": "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/7ae0f56d53074872b028649617a22bbb4232feb7/targets/JM-1%20with%20Harman%20filters.csv",
+    "revision": "7ae0f56d53074872b028649617a22bbb4232feb7",
+    "sha256": "9120be5921ca9730a257fdfd02ba53f27523831a56169627746c0e6c0671e93f",
+    "downloaded": "2026-10-15"
+  },
+  {
+    "file": "harman-iem-2019.csv",
+    "source": "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/7ae0f56d53074872b028649617a22bbb4232feb7/targets/Harman%20in-ear%202019.csv",
+    "revision": "7ae0f56d53074872b028649617a22bbb4232feb7",
+    "sha256": "9f7acab72e1f7507889a13d4278390089d495ccedcfd3aa48df939a6c7491139",
+    "downloaded": "2026-10-15"
+  },
+  {
+    "file": "ief-neutral.csv",
+    "source": "https://raw.githubusercontent.com/iwalton3/AutoEq/8807b35f861564dbe53dc9dacbc0fa74bb6bb4a4/compensation/ief_neutral_in-ear.csv",
+    "revision": "8807b35f861564dbe53dc9dacbc0fa74bb6bb4a4",
+    "sha256": "a58683a6f04eea3a063d026d9e2d1a1f5f330d536cd82e2cd044b9f6efb824b4",
+    "downloaded": "2026-10-15"
+  },
+  {
+    "file": "ief-neutral-bass.csv",
+    "source": "https://raw.githubusercontent.com/iwalton3/AutoEq/8807b35f861564dbe53dc9dacbc0fa74bb6bb4a4/compensation/ief_neutral_in-ear_with_bass.csv",
+    "revision": "8807b35f861564dbe53dc9dacbc0fa74bb6bb4a4",
+    "sha256": "7b7cef71a900f85ad291fda09a5dc2f915f97fac31bd3db3e11afc9a8a5b5a57",
+    "downloaded": "2026-10-15"
+  }
+]

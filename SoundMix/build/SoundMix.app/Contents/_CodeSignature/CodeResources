@@ -25,6 +25,38 @@
 			<key>optional</key>
 			<true/>
 		</dict>
+		<key>Resources/Targets/LICENSE-AutoEq.txt</key>
+		<data>
+		qf0/0xOMd4IYvkZVgaoiUcKobs4=
+		</data>
+		<key>Resources/Targets/LICENSE-IEF-AutoEq.txt</key>
+		<data>
+		qf0/0xOMd4IYvkZVgaoiUcKobs4=
+		</data>
+		<key>Resources/Targets/README.md</key>
+		<data>
+		UCjv5LlI4lu4rvbf/f+oETjEECw=
+		</data>
+		<key>Resources/Targets/harman-iem-2019.csv</key>
+		<data>
+		axkwmlt6PgdHQuRIYkX36rY7i9Q=
+		</data>
+		<key>Resources/Targets/ief-neutral-bass.csv</key>
+		<data>
+		zb3y49hKB4MTGmXdeBpvo5hlvqY=
+		</data>
+		<key>Resources/Targets/ief-neutral.csv</key>
+		<data>
+		YdwqEpf7qwdUdo10LkFxJyyJFVY=
+		</data>
+		<key>Resources/Targets/jm1-harman.csv</key>
+		<data>
+		SOIBWy16I7AU/oIxohjWMkLEMrA=
+		</data>
+		<key>Resources/Targets/sources.json</key>
+		<data>
+		CLzky5/N5Dpt1uYRMKP+Fxa2qRk=
+		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -57,6 +89,62 @@
 			</data>
 			<key>optional</key>
 			<true/>
+		</dict>
+		<key>Resources/Targets/LICENSE-AutoEq.txt</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			pululqUbW9ffC5JsMl987yZwZLxLPAE6YadWVSGmp3o=
+			</data>
+		</dict>
+		<key>Resources/Targets/LICENSE-IEF-AutoEq.txt</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			pululqUbW9ffC5JsMl987yZwZLxLPAE6YadWVSGmp3o=
+			</data>
+		</dict>
+		<key>Resources/Targets/README.md</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ZETLJVpWG5BweCs6XWW+9xNeKRKD1UGu5dSwZV4S0Go=
+			</data>
+		</dict>
+		<key>Resources/Targets/harman-iem-2019.csv</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			n3rKty4fdQeImhPUJ4OQCJ1JXM7c/Tqkjfk5psdJETk=
+			</data>
+		</dict>
+		<key>Resources/Targets/ief-neutral-bass.csv</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			e3zvcakA+FrSkf2gml3C+RX5f6wxvT2z4Rr8mopbWlc=
+			</data>
+		</dict>
+		<key>Resources/Targets/ief-neutral.csv</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			pYaDpvBO6joGPQJtni0aH18zDVNs2C4s0ES59u+4JLQ=
+			</data>
+		</dict>
+		<key>Resources/Targets/jm1-harman.csv</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			kSC+WSHKlzCiV/39ArpT8nUjgxpWFpYndGwObAZx6T8=
+			</data>
+		</dict>
+		<key>Resources/Targets/sources.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			EYhKbpggN3YxdaVl0mbRZtMMGPtpJ9Oygg6Cr+KiLkw=
+			</data>
 		</dict>
 	</dict>
 	<key>rules</key>
