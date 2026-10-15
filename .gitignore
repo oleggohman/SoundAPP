@@ -10,3 +10,6 @@ PLAN.md
 
 # Generated macOS installers
 SoundMix/dist/
+
+# Build artifacts — the build counter lives in SoundMix/BUILD_NUMBER
+SoundMix/build/

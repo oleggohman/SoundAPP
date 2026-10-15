@@ -17,6 +17,19 @@ BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD" =~ ^[1-9][0-9]*$ ]] || {
     echo "Invalid app version metadata." >&2; exit 1;
 }
+# A skipped build must package what the sources say, not what happens to be in
+# build/: the app's stamped version has to match the VERSION and BUILD_NUMBER
+# files, otherwise the DMG would ship stale code under a new identity.
+FILE_VERSION=$(cat VERSION)
+FILE_BUILD=$(cat BUILD_NUMBER 2>/dev/null || echo 0)
+[[ "$VERSION" == "$FILE_VERSION" ]] || {
+    echo "App version $VERSION does not match VERSION file $FILE_VERSION. Rebuild, or update VERSION." >&2
+    exit 1
+}
+[[ "$BUILD" == "$FILE_BUILD" ]] || {
+    echo "App build $BUILD does not match BUILD_NUMBER file $FILE_BUILD. Rebuild before packaging." >&2
+    exit 1
+}
 codesign --verify --deep --strict "$APP"
 
 mkdir -p dist

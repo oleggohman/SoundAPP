@@ -9,7 +9,7 @@ blunt preamp.
 
 ```bash
 ./build.sh              # builds build/SoundMix.app and build/bedgen
-./run-tests.sh          # 193 DSP checks (no audio hardware needed)
+./run-tests.sh          # 316 DSP checks (no audio hardware needed)
 ./run-offline-tests.sh  # 47 file-render and clock-drift checks
 ./run-realtime-tests.sh # 6 concurrency and resampling fidelity checks
 ./run-device-volume-tests.sh # 10 device-volume checks; real devices are read only
@@ -22,11 +22,11 @@ manager, no network access.
 
 ## Versioning
 
-`VERSION` is the release version (`major.minor.patch`), currently `1.1.0`.
+`VERSION` is the release version (`major.minor.patch`), currently `1.2.0`.
 Edit it when releasing a patch, feature, or breaking change. `./build.sh` stamps
-that version into the app and increments the build number from the existing local
-app bundle. A clean build directory starts at build 1. For a release or CI build,
-choose an explicit number with `BUILD_NUMBER=42 ./build.sh`.
+that version into the app and increments the build counter in the tracked
+`BUILD_NUMBER` file, so a clean clone continues the sequence. For a release or
+CI build, choose an explicit number with `BUILD_NUMBER=42 ./build.sh`.
 
 The sidebar and macOS About dialog read the version and build from the app bundle.
 Restart the rebuilt app to see the updated values.
@@ -35,8 +35,11 @@ Restart the rebuilt app to see the updated values.
 
 Run `./build-dmg.sh` to rebuild the app and package a compressed installer in
 `dist/SoundMix-<version>-build-<number>.dmg`. Use `./build-dmg.sh --skip-build`
-to package the existing app without incrementing its build number. Existing DMGs
-are never overwritten. Set `BUILD_NUMBER=42 ./build-dmg.sh` for an explicit build.
+to package the existing app without incrementing its build number; the packager
+verifies the app's stamped version and build match the `VERSION` and
+`BUILD_NUMBER` files, so stale builds cannot ship under a new identity.
+Existing DMGs are never overwritten. Set `BUILD_NUMBER=42 ./build-dmg.sh` for an
+explicit build.
 
 Open the DMG, drag **SoundMix.app** onto **Applications**, eject the image, and
 launch SoundMix from Applications. Quit an older running copy before replacing it.
@@ -66,7 +69,7 @@ for public distribution are not configured.
 | **Offline rendering** | none — live device only | internal testing only |
 | **Headphone rendering** | none | binaural fold: 16 bed channels convolved with a synthesised head-related bank, 15 convolutions per block |
 | **Earphone correction** | PEQ text only | pair a measured response with each EQ profile; plot measured, EQ and corrected together |
-| **Tests** | none shipped | **312** automated checks, including real file renders |
+| **Tests** | none shipped | **316** automated checks, including real file renders |
 
 ## The matrix problem, and the fix
 
@@ -233,7 +236,7 @@ Sources/
     SoundMixEngine.swift    two AUHAL units, bring-up, device-loss handling
     OfflineRenderer.swift   file in, stereo file out, same chain
   SoundMixApp/       SwiftUI, SoundMix design system
-Tests/main.swift    253 checks
+Tests/main.swift    316 checks
 ```
 
 ## Interface
@@ -259,7 +262,7 @@ UI library — and every colour comes from a named token in `Sources/SoundMixApp
 
 ## Verified so far
 
-- **193/193 DSP checks pass** (`./run-tests.sh`), covering matrix parity with the shipped
+- **316/316 DSP checks pass** (`./run-tests.sh`), covering matrix parity with the shipped
   binary, headroom maths, Butterworth design and group delay, REW/APO parsing, the EQ
   profile library and its import/export, earphone-measurement parsing, limiter ceilings,
   and end-to-end routing, swap and muting through the processor.
@@ -303,6 +306,25 @@ are disabled with an explanation. No device volume is changed on startup.
 
 Hardware setters are covered by mocked tests; actual connected-device capability
 and volume reads were verified without changing the user's volume.
+
+## Device settings the engine changes and restores
+
+Starting a session can move the input device's sample rate to match the output
+and set both devices' buffer frame sizes, because the two AUHAL units need one
+shared rate. These are system-global settings other apps hear too, so stopping
+the session (or the engine failing, or a device vanishing) puts each one back
+the way it was found. Refusals are logged, never fatal. No device volume is
+ever changed by the engine.
+
+## Robustness
+
+A capture device delivering NaN or infinities is muted at ingestion, so no
+non-finite sample can reach the EQ chain, the limiter or the meters; the limiter
+additionally mutes any non-finite frame and the RMS meter cannot latch NaN.
+Capture diagnostics are read atomically across threads. The control-side
+reconfiguration APIs (`applyNow`, `prepare`, `reset`) swap whole render states
+under a lock rather than mutating live state, so an ill-timed call cannot race
+the audio thread.
 
 ## Offline target previews
 
