@@ -13,3 +13,7 @@ SoundMix/dist/
 
 # Build artifacts — the build counter lives in SoundMix/BUILD_NUMBER
 SoundMix/build/
+
+# Stray files from another project (SystemEQ-for-Mac), not part of SoundMix
+INTEGRATION_MANUAL.md
+import_opra.swift
