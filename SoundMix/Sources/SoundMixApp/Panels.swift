@@ -171,6 +171,102 @@ private struct DeviceDetail: View {
 
 // MARK: - Downmix
 
+/// The binaural settings, shown in place of the matrix when that fold is active.
+private struct BinauralCard: View {
+    @EnvironmentObject var model: AppModel
+
+    private var profile: BinauralProfile { model.workingBinaural }
+    private var isCrossfeed: Bool { profile.model == .crossfeed }
+
+    var body: some View {
+        CZCard(title: "Binaural", subtitle: profile.notes) {
+            CZSelect(label: "Filter bank", selection: $model.binauralName,
+                     options: model.availableBinaurals.map { ($0.name, $0.name) },
+                     help: profile.model.explanation)
+                .onChange(of: model.binauralName) { _, _ in model.syncBinauralEditors() }
+
+            HStack(alignment: .bottom, spacing: CZ.Spacing.lg) {
+                CZField(label: "Head radius", text: $model.headRadiusText, suffix: "cm", width: 120)
+                    .disabled(isCrossfeed)
+                CZField(label: "Bass crossover", text: $model.bassCrossoverText, suffix: "Hz", width: 140)
+                CZField(label: "Rear damping", text: $model.rearDampingText, suffix: "dB", width: 130)
+                    .disabled(isCrossfeed)
+                CZField(label: "Elevation cue", text: $model.elevationCueText, suffix: "dB", width: 130)
+                    .disabled(isCrossfeed)
+                Spacer()
+            }
+
+            Text(isCrossfeed
+                 ? "Crossfeed has no head model, so only the bass split applies. Set the crossover to 0 to switch it off."
+                 : "Head radius sets both the inter-aural delay and the corner of the head shadow. Below the bass crossover the fold collapses to the centre, because the ear takes no direction from there and per-ear filtering of the bass only combs; 0 switches the split off. Rear damping is the front/back cue a sphere cannot provide on its own, and the elevation cue is a pinna notch that climbs with height.")
+                .font(CZ.Typography.caption).foregroundStyle(CZ.Color.mediumGray)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let bank = model.displayedBank {
+                HRIRTable(bank: bank, layout: model.layout)
+                Text(String(format: "%d taps per ear per channel at %.0f kHz, 15 convolutions per block, %.2f ms of bulk delay.",
+                            bank.tapCount, bank.sampleRate / 1000,
+                            Double(bank.referenceDelaySamples) / bank.sampleRate * 1000))
+                    .font(CZ.Typography.caption).foregroundStyle(CZ.Color.lightGray)
+            }
+
+            CZAlert(kind: .warning,
+                    message: "For headphones only. On speakers this will sound wrong. It also colours the timbre by design, and because the head is synthetic rather than measured from you, front/back confusion and an in-head image are normal rather than faults.")
+        }
+    }
+}
+
+/// What the filter bank does to each mapped channel: where it is, how late it
+/// reaches the far ear, and at what level it reaches each one.
+private struct HRIRTable: View {
+    let bank: HRIRBank
+    let layout: LayoutPreset
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Bed channel").font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
+                Spacer()
+                ForEach(["Direction", "ITD", "→ L", "→ R"], id: \.self) { head in
+                    Text(head).font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
+                        .frame(width: head == "Direction" ? 120 : 76, alignment: .trailing)
+                }
+            }
+            .padding(.vertical, CZ.Spacing.xs)
+            Divider()
+            ForEach(layout.activeChannels.filter { $0 != .lfe }, id: \.rawValue) { ch in
+                HStack {
+                    Text("\(ch.shortName)  ·  \(ch.longName)")
+                        .font(CZ.Typography.bodySmall).foregroundStyle(CZ.Color.defaultText)
+                    Spacer()
+                    Text(String(format: "%.0f° / %.0f°", ch.direction.azimuthDeg, ch.direction.elevationDeg))
+                        .font(CZ.Typography.mono(12)).foregroundStyle(CZ.Color.mediumGray)
+                        .frame(width: 120, alignment: .trailing)
+                    Text(String(format: "%+.0f µs", bank.itdMicroseconds(ch)))
+                        .font(CZ.Typography.mono(12)).foregroundStyle(CZ.Color.mediumGray)
+                        .frame(width: 76, alignment: .trailing)
+                    Text(String(format: "%+.1f dB", bank.gainDB(ch, ear: HRIRBank.leftEar)))
+                        .font(CZ.Typography.mono(12)).foregroundStyle(CZ.Color.darkBlue)
+                        .frame(width: 76, alignment: .trailing)
+                    Text(String(format: "%+.1f dB", bank.gainDB(ch, ear: HRIRBank.rightEar)))
+                        .font(CZ.Typography.mono(12)).foregroundStyle(CZ.Color.darkBlue)
+                        .frame(width: 76, alignment: .trailing)
+                }
+                .padding(.vertical, 3)
+                Divider().opacity(0.4)
+            }
+            if layout.activeChannels.contains(.lfe) {
+                HStack {
+                    Text("LFE  ·  not filtered — direction is not carried down there")
+                        .font(CZ.Typography.caption).foregroundStyle(CZ.Color.lightGray)
+                    Spacer()
+                }
+                .padding(.vertical, 3)
+            }
+        }
+    }
+}
+
 struct SoundMixPanel: View {
     @EnvironmentObject var model: AppModel
 
@@ -186,12 +282,27 @@ struct SoundMixPanel: View {
                 ChannelMapStrip(layout: model.layout)
             }
 
-            CZCard(title: "Matrix",
-                   subtitle: (model.availableRecipes.first { $0.name == model.recipeName })?.notes ?? "") {
-                CZSelect(label: "Downmix recipe", selection: $model.recipeName,
-                         options: model.availableRecipes.map { ($0.name, $0.name) })
-                    .onChange(of: model.recipeName) { _, _ in model.syncRecipeEditors() }
-                MatrixTable(matrix: matrix, layout: model.layout)
+            CZCard(title: "Fold",
+                   subtitle: "How the bed becomes two channels: a matrix of gains, which is right for speakers, or a head-related filter bank, which is right for headphones.") {
+                CZSelect(label: "Fold mode", selection: $model.foldIsBinaural,
+                         options: [(false, "Amplitude matrix  ·  speakers"),
+                                   (true, "Binaural / HRTF  ·  headphones")],
+                         help: model.foldIsBinaural
+                            ? "Every bed channel is filtered with the response of a head at that loudspeaker angle, so the channels arrive from their own directions instead of being panned between two points. Headphones only — on speakers the crosstalk between them undoes the effect."
+                            : "Every bed channel is scaled by a coefficient and summed. Correct for speakers, and the only mode that can reproduce the original app.")
+                    .onChange(of: model.foldIsBinaural) { _, _ in model.syncFoldEditors() }
+            }
+
+            if model.foldIsBinaural {
+                BinauralCard()
+            } else {
+                CZCard(title: "Matrix",
+                       subtitle: (model.availableRecipes.first { $0.name == model.recipeName })?.notes ?? "") {
+                    CZSelect(label: "Downmix recipe", selection: $model.recipeName,
+                             options: model.availableRecipes.map { ($0.name, $0.name) })
+                        .onChange(of: model.recipeName) { _, _ in model.syncRecipeEditors() }
+                    MatrixTable(matrix: matrix, layout: model.layout)
+                }
             }
 
             CZCard(title: "Headroom",
@@ -200,9 +311,9 @@ struct SoundMixPanel: View {
                          options: HeadroomMode.allCases.map { ($0, $0.label) },
                          help: model.headroomMode.explanation)
                 HStack(alignment: .top, spacing: CZ.Spacing.xl) {
-                    stat("Worst-case gain", String(format: "%+.2f dB", matrix.worstCasePeakGainDB),
+                    stat("Worst-case gain", String(format: "%+.2f dB", config.foldPeakGainDB),
                          "Every mapped channel at full scale at once.")
-                    stat("Uncorrelated gain", String(format: "%+.2f dB", matrix.uncorrelatedGainDB),
+                    stat("Uncorrelated gain", String(format: "%+.2f dB", config.foldPowerGainDB),
                          "Realistic level change for normal material.")
                     stat("Automatic trim", String(format: "%+.2f dB", config.automaticTrimDB), nil)
                     stat("Total applied", String(format: "%+.2f dB", config.totalTrimDB), nil)
@@ -218,9 +329,13 @@ struct SoundMixPanel: View {
                 Text("The limiter only reduces peaks. Use small gain steps for quiet material; buttons apply immediately during playback.")
                     .font(CZ.Typography.caption).foregroundStyle(CZ.Color.mediumGray)
                     .fixedSize(horizontal: false, vertical: true)
-                if matrix.worstCasePeakGainDB > 0 && model.headroomMode == .none && !model.limiterEnabled {
+                if config.foldPeakGainDB > 0 && model.headroomMode == .none && !model.limiterEnabled {
                     CZAlert(kind: .warning,
-                            message: String(format: "With no automatic trim and no limiter this matrix can reach %+.1f dB — the same overload the original app has.", matrix.worstCasePeakGainDB + (Double(model.manualGainText) ?? 0)))
+                            message: String(format: "With no automatic trim and no limiter this fold can reach %+.1f dB — the same overload the original app has.", config.foldPeakGainDB + (Double(model.manualGainText) ?? 0)))
+                }
+                if model.foldIsBinaural && model.headroomMode == .peakSafe {
+                    CZAlert(kind: .info,
+                            message: "Peak-safe bounds a filter bank by the sum of its absolute taps, which is a far deeper cut than the same bound on a matrix. Power-preserving is the usable setting here; the limiter catches what is left.")
                 }
             }
 
@@ -745,7 +860,20 @@ private struct ResponseCard: View {
                    ? "What the current profile does across the band, before it reaches the limiter. Load an earphone measurement to see the correction against the curve it is correcting."
                    : "The measured curve, the EQ applied to it, and the result you will actually hear.") {
 
-            ResponseCurve(traces: traces(rate: rate),
+            HStack {
+                Spacer()
+                CZButton(title: "Expand & edit PEQ", icon: "arrow.up.left.and.arrow.down.right",
+                         variant: .secondary, size: .small) {
+                    PEQPlotWindow.shared.show(model: model)
+                }
+            }
+            Text(model.canShowErrorView && model.plotMode == .errorVsTarget
+                 ? "Deviation from target (dB) · + above target / − below target · shaded band ±3 dB"
+                 : "Normalized response / EQ gain (dB)")
+                .font(CZ.Typography.caption)
+                .foregroundStyle(CZ.Color.mediumGray)
+            ResponseCurve(traces: ResponsePlotTraces.make(model: model, rate: rate,
+                          global: model.globalProfile, speakers: model.speakerProfiles, mode: model.plotMode),
                           toleranceBandDB: (model.canShowErrorView
                                             && model.plotMode == .errorVsTarget) ? 3 : nil,
                           hidden: $model.hiddenTraces)
@@ -792,14 +920,14 @@ private struct ResponseCard: View {
                 }
                 if model.hasMeasurement {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Result deviation").font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
-                        Text(String(format: "±%.1f dB", model.resultDeviationDB()))
+                        Text("Max absolute deviation").font(CZ.Typography.label).foregroundStyle(CZ.Color.mediumGray)
+                        Text(model.resultDeviationDB().map { String(format: "%.1f dB", $0) } ?? "—")
                             .font(CZ.Typography.mono(14))
                             .foregroundStyle(CZ.Color.darkBlue)
                     }
                     Text(model.target == nil
-                         ? "How far the corrected curve still swings, 20 Hz to 20 kHz, worst ear. Lower is flatter."
-                         : "Worst departure from the target, 20 Hz to 20 kHz, across both ears. The shaded band is ±3 dB.")
+                         ? "Worst departure from the mean within measured coverage (20 Hz–20 kHz). Lower is flatter."
+                         : "Worst departure within measurement/target overlap (20 Hz–20 kHz), across available ears. No overlap: —.")
                         .font(CZ.Typography.caption)
                         .foregroundStyle(CZ.Color.lightGray)
                         .fixedSize(horizontal: false, vertical: true)
@@ -822,90 +950,6 @@ private struct ResponseCard: View {
                     .onChange(of: model.eqBypassed) { _, _ in model.applyLive() }
             }
         }
-    }
-
-    private func traces(rate: Double) -> [ResponseCurve.Trace] {
-        guard model.hasMeasurement else {
-            // Nothing measured: just show what the filters themselves do.
-            var out: [ResponseCurve.Trace] = [
-                .fromProfile("Global", CZ.Color.blue, model.globalProfile, sampleRate: rate),
-                .fromProfile("Speaker L", CZ.Color.purple, model.speakerProfiles.left, sampleRate: rate),
-                .fromProfile("Speaker R", CZ.Color.pink, model.speakerProfiles.right,
-                             sampleRate: rate, dashed: true),
-            ]
-            if let t = model.target {
-                out.insert(.init(label: "Target · \(t.name)", color: CZ.Color.red,
-                                 points: t.normalized().sampled(), dashed: true), at: 0)
-            }
-            return out
-        }
-
-        let errorMode = model.canShowErrorView && model.plotMode == .errorVsTarget
-        let reference = model.target?.normalized()
-
-        /// In error mode every curve is drawn as its distance from the target.
-        func shape(_ curve: FrequencyResponse) -> [FrequencyResponse.Point] {
-            guard errorMode, let reference else { return curve.normalized().sampled() }
-            return curve.normalized().difference(from: reference)
-        }
-
-        var out: [ResponseCurve.Trace] = []
-
-        // The target itself: a shaped line in absolute mode, the zero line in error mode.
-        if let reference {
-            out.append(.init(label: errorMode
-                                ? "\(reference.name) — flattened to 0"
-                                : "Target · \(reference.name)",
-                             color: CZ.Color.red,
-                             points: errorMode
-                                ? ResponseCurve.grid.map { .init(hz: $0, db: 0) }
-                                : reference.sampled(),
-                             dashed: true))
-        }
-
-        for side in EQProfile.Side.allCases {
-            guard let m = model.measurement(side) else { continue }
-            out.append(.init(label: "Measured \(side.short)",
-                             color: CZ.Color.lightGray,
-                             points: shape(m),
-                             dashed: side == .right))
-        }
-
-        for side in EQProfile.Side.allCases {
-            guard let m = model.measurement(side) else { continue }
-            let corrected = FrequencyResponse(
-                name: "", points: m.corrected(by: model.combinedEQCascade(side), sampleRate: rate))
-            out.append(.init(label: "Result \(side.short)",
-                             color: side == .left ? CZ.Color.purple : CZ.Color.pink,
-                             points: shape(corrected),
-                             dashed: side == .right,
-                             emphasised: true))
-        }
-
-        // The EQ curve is only meaningful on absolute axes.
-        if !errorMode {
-            let sameEQ = model.speakerProfiles.left == model.speakerProfiles.right
-            if sameEQ {
-                out.append(.fromProfile("EQ", CZ.Color.blue, eqAsProfile(.left),
-                                        sampleRate: rate, dashed: true))
-            } else {
-                out.append(.fromProfile("EQ L", CZ.Color.blue, eqAsProfile(.left),
-                                        sampleRate: rate, dashed: true))
-                out.append(.fromProfile("EQ R", CZ.Color.mediumBlue, eqAsProfile(.right),
-                                        sampleRate: rate, dashed: true))
-            }
-        }
-        return out
-    }
-
-    /// The combined EQ for one ear, expressed as a profile so the plot can
-    /// sample it the same way as the others.
-    private func eqAsProfile(_ side: EQProfile.Side) -> PEQProfile {
-        var p = model.globalProfile
-        let speaker = side == .left ? model.speakerProfiles.left : model.speakerProfiles.right
-        p.filters += speaker.filters
-        p.preampDB += speaker.preampDB
-        return p
     }
 
 }

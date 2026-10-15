@@ -106,10 +106,18 @@ struct Sidebar: View {
                         .font(CZ.Typography.body(19, .semibold, display: true))
                         .foregroundStyle(CZ.Color.invertedText)
                 }
-                Text("SoundMix")
-                    .font(CZ.Typography.ui(11, .medium))
-                    .foregroundStyle(CZ.Color.mediumBlue)
-                    .tracking(1.4)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")")
+                        .font(CZ.Typography.ui(12, .semibold))
+                        .foregroundStyle(CZ.Color.invertedText)
+                    Text("Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
+                        .font(CZ.Typography.ui(11, .medium))
+                        .foregroundStyle(CZ.Color.invertedText.opacity(0.8))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(CZ.Color.white.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: CZ.Radius.tiny))
             }
             .padding(.horizontal, CZ.Spacing.lg)
             .padding(.top, CZ.Spacing.xl)

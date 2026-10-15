@@ -418,8 +418,8 @@ do {
 
     // Normalisation anchors the arbitrary absolute level.
     let norm = m.normalized(low: 200, high: 2_000)
-    let band = [1.0, 0.0, -1.0, 2.0]                     // 200, 500, 1000, 2000 Hz
-    let mean = band.reduce(0, +) / Double(band.count)
+    let mean = (0.5 * log(500.0 / 200) - 0.5 * log(1000.0 / 500)
+                + 0.5 * log(2000.0 / 1000)) / log(10)
     near(norm.magnitudeDB(at: 500), 0.0 - mean, 1e-9, "normalisation subtracts the band mean")
     check(abs(norm.magnitudeDB(at: 1000) - (-1.0 - mean)) < 1e-9, "normalisation shifts the whole curve")
 
@@ -610,6 +610,112 @@ do {
     check(selfDiff.allSatisfy { abs($0.db) < 1e-9 }, "a curve minus itself is zero everywhere")
 }
 
+section("Response plot normalization and coverage")
+do {
+    let sparse = FrequencyResponse(name: "Slope", points: [
+        .init(hz: 20, db: -10), .init(hz: 200, db: 0),
+        .init(hz: 1000, db: 10 * log10(5)), .init(hz: 2000, db: 10),
+        .init(hz: 20000, db: 20)])
+    let result = FrequencyResponse(name: "Flat EQ", points: sparse.corrected(
+        by: PEQProfile.flat.cascade(sampleRate: 48000), sampleRate: 48000))
+    near(result.normalized().magnitudeDB(at: 1000),
+         sparse.normalized().magnitudeDB(at: 1000), 1e-9,
+         "flat EQ preserves normalized measurement level")
+    let dense = FrequencyResponse(name: "Dense", points: sparse.sampled(count: 1001))
+    near(dense.normalized().magnitudeDB(at: 1000), sparse.normalized().magnitudeDB(at: 1000),
+         1e-9, "normalization is independent of sample density")
+    let partial = FrequencyResponse(name: "Partial", points: [
+        .init(hz: 100, db: 3), .init(hz: 10000, db: 3)])
+    let reference = FrequencyResponse(name: "Target", points: [
+        .init(hz: 200, db: 1), .init(hz: 15000, db: 1)])
+    let error = partial.difference(from: reference)
+    near(error.first!.hz, 200, 1e-9, "error starts at shared coverage")
+    near(error.last!.hz, 10000, 1e-7, "error ends at shared coverage")
+    check(error.allSatisfy { abs($0.db - 2) < 1e-9 }, "positive error means above target")
+    let separate = FrequencyResponse(name: "Separate", points: [
+        .init(hz: 16000, db: 0), .init(hz: 20000, db: 0)])
+    check(partial.difference(from: separate).isEmpty, "no overlap produces no error data")
+    let corrected = partial.corrected(by: PEQProfile.flat.cascade(sampleRate: 48000), sampleRate: 48000)
+    check(corrected.allSatisfy { $0.hz >= 100 && $0.hz <= 10000 },
+          "corrected curve stays within measurement coverage")
+}
+
+
+section("Graphical PEQ draft preservation")
+do {
+    let global = "# keep original comment\nPreamp: -3.123456789 dB\nFilter 1: OFF LSC Fc 100.123456789 Hz Gain 2.123456789 dB Q 0.7123456789"
+    let speaker = "Preamp: -2 dB\nFilter 1: ON PK Fc 2000 Hz Gain -4 dB Q 2"
+    var draft = PEQEditDraft(global: global, speaker: speaker, swapsOutputs: false)
+    check(!draft.hasChanges && draft.globalText == global && draft.speakerText == speaker,
+          "opening and cancelling an editor preserves exact source text")
+    let otherEar = draft.profile(.right)
+    var left = draft.profile(.left)
+    left.filters[0].frequency = 3000
+    left.filters[0].gainDB = 5
+    left.filters[0].q = 4
+    draft.setProfile(left, for: .left)
+    check(draft.profile(.right) == otherEar, "editing a mono fallback materializes and preserves the opposite ear")
+    let roundTrip = APOParser.parse(draft.speakerText)
+    check(roundTrip.profile(forChannel: 0) == left, "frequency gain and Q survive graphical serialization")
+    check(roundTrip.profile(forChannel: 1) == otherEar, "opposite ear survives serialization")
+    check(draft.globalText == global, "speaker edit preserves global source text")
+    var g = draft.profile(.global)
+    g.filters.append(PEQFilter(frequency: 7000, gainDB: -3, q: 1.5))
+    draft.setProfile(g, for: .global)
+    check(APOParser.parse(draft.globalText).firstProfile == g,
+          "adding a band preserves disabled shelf type preamp and numeric precision")
+    g.filters.removeLast()
+    g.filters[0].enabled = true
+    draft.setProfile(g, for: .global)
+    check(APOParser.parse(draft.globalText).firstProfile == g, "delete and enable survive serialization")
+    var swapped = PEQEditDraft(global: "", speaker: draft.speakerText, swapsOutputs: true)
+    let untouched = swapped.profile(.right)
+    var physicalLeft = swapped.profile(.left)
+    physicalLeft.preampDB = -9
+    swapped.setProfile(physicalLeft, for: .left)
+    check(APOParser.parse(swapped.speakerText).profile(forChannel: 1) == physicalLeft,
+          "physical left edits the routed right document channel when outputs are swapped")
+    check(swapped.profile(.right) == untouched, "swapped edit preserves physical right")
+    var unsupported = PEQEditDraft(global: "Include: extra.txt", speaker: "", swapsOutputs: false)
+    unsupported.setProfile(g, for: .global)
+    check(!unsupported.warnings.isEmpty && unsupported.globalText == "Include: extra.txt",
+          "unsupported directives cannot be silently discarded by graphical edits")
+    var empty = PEQEditDraft(global: "", speaker: "", swapsOutputs: false)
+    empty.setProfile(PEQProfile(filters: [.init(frequency: 1000, gainDB: 2, q: 1)]), for: .global)
+    check(APOParser.parse(empty.globalText).firstProfile.filters.count == 1,
+          "a flat empty profile can gain its first editable band")
+}
+
+section("Vertical PEQ editing, Reset and repeated Apply")
+do {
+    let source = "# original\nPreamp: -3 dB\nFilter 1: ON PK Fc 1234.567 Hz Gain -2 dB Q 1.234"
+    var draft = PEQEditDraft(global: source, speaker: "", swapsOutputs: false)
+    let original = draft.profile(.global)
+    draft.setGain(5, at: 0, for: .global)
+    near(draft.profile(.global).filters[0].frequency, 1234.567, 1e-12,
+         "vertical dragging cannot change frequency")
+    near(draft.profile(.global).filters[0].q, 1.234, 1e-12,
+         "vertical dragging preserves bandwidth")
+    check(draft.referenceProfile(.global) == original, "reference stays at the pre-edit curve")
+    draft.reset()
+    check(!draft.hasChanges && draft.globalText == source,
+          "Reset restores exact source and clears the draft")
+    draft.setGain(7, at: 0, for: .global)
+    let appliedText = draft.globalText
+    draft.acceptChanges()
+    check(!draft.hasChanges && draft.originalGlobal == appliedText,
+          "Apply accepts a new baseline without needing a new editor")
+    draft.setGain(-4, at: 0, for: .global)
+    check(draft.hasChanges, "editing can continue after Apply")
+    near(draft.referenceProfile(.global).filters[0].gainDB, 7, 1e-12,
+         "reference after Apply shows the applied gain")
+    draft.reset()
+    check(draft.globalText == appliedText, "Reset after Apply retains the applied edits")
+    draft.setGain(100, at: 0, for: .global)
+    near(draft.profile(.global).filters[0].gainDB, 24, 1e-12, "drag gain is bounded")
+    draft.setGain(.nan, at: 0, for: .global)
+    near(draft.profile(.global).filters[0].gainDB, 24, 1e-12, "non-finite drag gain is ignored")
+}
 
 section("Limiter channel isolation and live handoff")
 do {
@@ -660,6 +766,359 @@ do {
         check(false, "failed profile save throws")
     } catch { check(true, "failed profile save throws") }
     check(lib.profiles.isEmpty, "failed save does not claim persistence")
+}
+
+// MARK: - Binaural / HRTF fold
+
+/// Deterministic pseudo-random source, so a failure is always reproducible.
+struct TestNoise {
+    var seed: UInt64 = 0x2545F4914F6CDD1D
+    mutating func next() -> Double {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        return Double(seed >> 11) / Double(1 << 53) * 2 - 1
+    }
+}
+
+/// Render interleaved stereo through a processor, in blocks of `blockFrames`.
+func renderStereo(_ cfg: ProcessorConfiguration, sampleRate: Double = 48_000,
+                  totalFrames: Int, blockFrames: Int = 512,
+                  fill: (Int, Int) -> Float) -> [Double] {
+    let channels = 16
+    let proc = SoundMixProcessor()
+    proc.applyNow(cfg)
+    proc.prepare(sampleRate: sampleRate)
+    proc.applyNow(cfg)
+    var input = [Float](repeating: 0, count: blockFrames * channels)
+    var output = [Float](repeating: 0, count: blockFrames * 2)
+    var result = [Double](repeating: 0, count: totalFrames * 2)
+    var done = 0
+    while done < totalFrames {
+        let n = min(blockFrames, totalFrames - done)
+        for f in 0..<n {
+            for c in 0..<channels { input[f * channels + c] = fill(done + f, c) }
+        }
+        input.withUnsafeBufferPointer { inPtr in
+            output.withUnsafeMutableBufferPointer { outPtr in
+                proc.process(input: inPtr.baseAddress!, inputChannels: channels,
+                             frames: n, output: outPtr.baseAddress!)
+            }
+        }
+        for f in 0..<n {
+            result[(done + f) * 2] = Double(output[f * 2])
+            result[(done + f) * 2 + 1] = Double(output[f * 2 + 1])
+        }
+        done += n
+    }
+    return result
+}
+
+func binauralConfig(_ profile: BinauralProfile,
+                    layout: LayoutPreset = .nativeBed,
+                    headroom: HeadroomMode = .none) -> ProcessorConfiguration {
+    var cfg = ProcessorConfiguration(layout: layout, recipe: .reference,
+                                     headroomMode: headroom, manualGainDB: 0)
+    cfg.binaural = profile
+    cfg.limiter = .init(ceilingDB: -1, lookaheadMS: 2, releaseMS: 80, enabled: false)
+    return cfg
+}
+
+section("HRIR bank geometry")
+do {
+    let bank = HRIRBank.generate(profile: .virtualSpeakers, sampleRate: sr)
+    check(bank.isMirrorSymmetric(), "the generated bank is an exact mirror pair by pair")
+    check(bank.tapCount >= 64 && bank.tapCount % 8 == 0, "tap count is sane", "\(bank.tapCount)")
+
+    // The head shadow has unity DC gain at every angle, which is what lets the
+    // bass crossover sum back to flat.
+    var worstDC = 0.0
+    for ch in BedChannel.allCases where ch != .lfe {
+        for ear in [HRIRBank.leftEar, HRIRBank.rightEar] {
+            worstDC = max(worstDC, abs(bank.dcGain(ch, ear: ear) - 1))
+        }
+    }
+    // Unity to within what the finite response can hold: the shadow filter's
+    // tail is truncated at the end of the bank.
+    near(worstDC, 0, 1e-5, "every impulse response has unity DC gain")
+
+    // The fractional-delay kernel itself, which is what carries the ITD.
+    let kernel = HRIRBank.fractionalDelayImpulse(delay: 12.5, tapCount: 64)
+    near(kernel.reduce(0, +), 1.0, 1e-12, "the delay kernel has exactly unit DC gain")
+    var weighted = 0.0
+    for (n, h) in kernel.enumerated() { weighted += Double(n) * h }
+    near(weighted, Double(HRIRBank.kernelHalfWidth) + 12.5, 1e-9,
+         "the delay kernel sits exactly where it was asked to")
+
+    near(bank.itdMicroseconds(.c), 0, 1e-6, "centre has no inter-aural delay")
+    // Woodworth for an 8.75 cm head puts the onset difference at 261 us for 30
+    // degrees and 656 us for 90. What is measured here is the energy centroid,
+    // which runs tens of microseconds later on the shadowed ear because the
+    // head shadow is a low-pass filter with its own group delay.
+    near(bank.itdMicroseconds(.l), 261, 60, "front left ITD follows Woodworth")
+    near(bank.itdMicroseconds(.ls), 656, 60, "side surround ITD is the maximum")
+    check(bank.itdMicroseconds(.r) < 0, "the mirrored channel leads the other ear")
+    check(abs(bank.itdMicroseconds(.ltm)) < abs(bank.itdMicroseconds(.ls)),
+          "an elevated channel has less inter-aural delay than one in the ear plane")
+
+    // Head shadow: the far ear is substantially quieter than the near ear.
+    let near90 = bank.gainDB(.ls, ear: HRIRBank.leftEar)
+    let far90 = bank.gainDB(.ls, ear: HRIRBank.rightEar)
+    check(near90 - far90 > 6, "the far ear is shadowed by at least 6 dB",
+          "near \(fmt(near90)) far \(fmt(far90))")
+    // Rear sources lose high frequency: the front/back cue.
+    check(bank.gainDB(.lrs, ear: HRIRBank.leftEar) < bank.gainDB(.ls, ear: HRIRBank.leftEar),
+          "a rear channel is damped relative to the side channel")
+
+    let cross = HRIRBank.generate(profile: .crossfeedOnly, sampleRate: sr)
+    check(cross.isMirrorSymmetric(), "the crossfeed bank is mirror symmetric too")
+    check(cross.gainDB(.l, ear: HRIRBank.rightEar) < cross.gainDB(.l, ear: HRIRBank.leftEar) - 4,
+          "crossfeed reaches the opposite ear attenuated")
+}
+
+section("Binaural convolution against a naive reference")
+do {
+    let bank = HRIRBank.generate(profile: .virtualSpeakers, sampleRate: sr)
+    let cap = 512
+    let engine = BinauralFoldEngine(bank: bank, blockCapacity: cap)
+    let n = 1400
+    var noise = TestNoise()
+    var x = [[Double]](repeating: [Double](repeating: 0, count: n), count: BedChannel.count)
+    for c in 0..<BedChannel.count where c != BedChannel.lfe.rawValue {
+        for t in 0..<n { x[c][t] = noise.next() }
+    }
+
+    var gotL = [Double](repeating: 0, count: n), gotR = [Double](repeating: 0, count: n)
+    var bed = [Double](repeating: 0, count: BedChannel.count * cap)
+    var oL = [Double](repeating: 0, count: cap), oR = [Double](repeating: 0, count: cap)
+    // Uneven blocks, including some shorter than the filter, to exercise the
+    // history shift in both the overlapping and non-overlapping case.
+    let sizes = [1, 7, 512, 300, 37, 512, 120, 11]
+    var t = 0, si = 0
+    while t < n {
+        let m = min(sizes[si % sizes.count], n - t); si += 1
+        for c in 0..<BedChannel.count { for f in 0..<m { bed[c * cap + f] = x[c][t + f] } }
+        bed.withUnsafeBufferPointer { b in
+            oL.withUnsafeMutableBufferPointer { l in
+                oR.withUnsafeMutableBufferPointer { r in
+                    engine.process(bed: b.baseAddress!, bedStride: cap, frames: m,
+                                   outL: l.baseAddress!, outR: r.baseAddress!)
+                }
+            }
+        }
+        for f in 0..<m { gotL[t + f] = oL[f]; gotR[t + f] = oR[f] }
+        t += m
+    }
+
+    // The reference is the full four-convolutions-per-pair form, so this is
+    // what proves the sum/difference shortcut.
+    var hl = [[Double]](), hr = [[Double]]()
+    for ch in BedChannel.allCases {
+        hl.append(Array(bank.taps(ch, ear: HRIRBank.leftEar)))
+        hr.append(Array(bank.taps(ch, ear: HRIRBank.rightEar)))
+    }
+    var worst = 0.0
+    for t in 0..<n {
+        var l = 0.0, r = 0.0
+        for c in 0..<BedChannel.count where c != BedChannel.lfe.rawValue {
+            let xs = x[c]
+            for k in 0..<bank.tapCount where k <= t {
+                l += hl[c][k] * xs[t - k]
+                r += hr[c][k] * xs[t - k]
+            }
+        }
+        worst = max(worst, abs(l - gotL[t]), abs(r - gotR[t]))
+    }
+    near(worst, 0, 1e-9, "block convolution equals direct convolution, any block size")
+}
+
+section("Binaural null test against the amplitude matrix")
+do {
+    // Crossfeed with the opposite-ear copy driven to silence is a pure delay:
+    // every channel reaches its own side at unity, the centre reaches both.
+    // That is exactly a unity amplitude matrix, 16 samples late.
+    let unity = MatrixRecipe(name: "Unity", centerGainDB: 0, lfeMode: .off)
+    var silentCrossfeed = BinauralProfile.crossfeedOnly
+    silentCrossfeed.crossfeedLevelDB = -400
+    silentCrossfeed.lfe = LFESettings(mode: .off)
+
+    let frames = 900
+    var noise = TestNoise()
+    var table = [Float](repeating: 0, count: frames * 16)
+    for i in 0..<(frames * 16) { table[i] = Float(noise.next()) }
+    let fill: (Int, Int) -> Float = { f, c in table[f * 16 + c] }
+
+    var matrixCfg = ProcessorConfiguration(layout: .nativeBed, recipe: unity,
+                                           headroomMode: .none, manualGainDB: 0)
+    matrixCfg.limiter = .init(ceilingDB: -1, lookaheadMS: 2, releaseMS: 80, enabled: false)
+    let viaMatrix = renderStereo(matrixCfg, totalFrames: frames, fill: fill)
+    let viaBinaural = renderStereo(binauralConfig(silentCrossfeed), totalFrames: frames, fill: fill)
+
+    let delay = HRIRBank.kernelHalfWidth
+    var worst = 0.0
+    for f in 0..<(frames - delay) {
+        worst = max(worst, abs(viaBinaural[(f + delay) * 2] - viaMatrix[f * 2]),
+                    abs(viaBinaural[(f + delay) * 2 + 1] - viaMatrix[f * 2 + 1]))
+    }
+    // Both paths quantise to 32-bit float on the way out, which sets the floor.
+    near(worst, 0, 2e-7, "a delta filter bank reproduces the matrix path exactly")
+}
+
+section("Binaural headroom and the peak-safe guarantee")
+do {
+    var profile = BinauralProfile.virtualSpeakers
+    profile.bassCrossoverHz = 0            // exact bound: no crossover in the way
+    profile.lfe = LFESettings(mode: .off)
+    let bank = HRIRBank.generate(profile: profile, sampleRate: sr)
+    let active = LayoutPreset.nativeBed.activeChannels
+
+    let safe = binauralConfig(profile, headroom: .peakSafe)
+    let power = binauralConfig(profile, headroom: .powerPreserving)
+    near(safe.automaticTrimDB, -SoundMixMatrix.dB(bank.worstCasePeakGain(for: active)), 1e-9,
+         "peak-safe trims by the summed absolute taps")
+    near(power.automaticTrimDB, -SoundMixMatrix.dB(bank.uncorrelatedGain(for: active)), 1e-9,
+         "power-preserving trims by the summed tap energy")
+    check(safe.automaticTrimDB < power.automaticTrimDB,
+          "the peak bound costs more level than the power figure")
+
+    // The trim is quoted at the reference rate, so it does not move when the
+    // device changes rate.
+    let at96 = HRIRBank.generate(profile: profile, sampleRate: 96_000)
+    check(at96.tapCount > bank.tapCount, "the bank lengthens with the sample rate")
+    near(safe.automaticTrimDB, -SoundMixMatrix.dB(bank.worstCasePeakGain(for: active)), 1e-9,
+         "the quoted trim is rate independent")
+
+    // Build the one signal that actually reaches the L1 bound: each channel
+    // driven with the sign of its own left-ear response, reversed in time.
+    let taps = bank.tapCount
+    let hit = taps + 8
+    var signs = [[Double]]()
+    for ch in BedChannel.allCases { signs.append(Array(bank.taps(ch, ear: HRIRBank.leftEar))) }
+    let worstCase: (Int, Int) -> Float = { f, c in
+        guard c != BedChannel.lfe.rawValue else { return 0 }
+        let k = hit - f
+        guard k >= 0, k < taps else { return 0 }
+        return signs[c][k] >= 0 ? 1 : -1
+    }
+    let rendered = renderStereo(safe, totalFrames: hit + 16, fill: worstCase)
+    var peak = 0.0
+    for f in 0..<(hit + 16) { peak = max(peak, abs(rendered[f * 2]), abs(rendered[f * 2 + 1])) }
+    near(peak, 1.0, 1e-6, "the worst case signal reaches full scale and no further")
+    check(peak <= 1.0 + 1e-9, "peak-safe cannot clip, even when the signal is built to",
+          "peak \(fmt(peak))")
+}
+
+section("Bass crossover")
+do {
+    /// Steady-state RMS of both ears for a sine on one bed channel.
+    func toneRMS(_ cfg: ProcessorConfiguration, channel: BedChannel, hz: Double) -> (l: Double, r: Double) {
+        let total = 16384 + 8192
+        let out = renderStereo(cfg, totalFrames: total, fill: { f, c in
+            c == channel.rawValue ? Float(sin(2 * .pi * hz * Double(f) / sr)) : 0
+        })
+        var l = 0.0, r = 0.0
+        for f in 16384..<total { l += out[f * 2] * out[f * 2]; r += out[f * 2 + 1] * out[f * 2 + 1] }
+        let n = Double(total - 16384)
+        return ((l / n).squareRoot(), (r / n).squareRoot())
+    }
+
+    var split = BinauralProfile.virtualSpeakers
+    split.lfe = LFESettings(mode: .off)
+    var flat = split
+    flat.bassCrossoverHz = 0
+
+    // The crossover must put back what it takes out: a centre source has no
+    // inter-aural delay, so the two legs realign exactly.
+    var worst = 0.0
+    for hz in [40.0, 80, 150, 300, 600, 2000] {
+        let a = toneRMS(binauralConfig(split), channel: .c, hz: hz)
+        let b = toneRMS(binauralConfig(flat), channel: .c, hz: hz)
+        worst = max(worst, abs(20 * log10(a.l / b.l)))
+    }
+    check(worst < 0.35, "splitting the bass out and back leaves the centre flat",
+          "worst deviation \(fmt(worst)) dB")
+
+    // Bass is folded to both ears equally; the top stays where it was panned.
+    let low = toneRMS(binauralConfig(split), channel: .ls, hz: 50)
+    let high = toneRMS(binauralConfig(split), channel: .ls, hz: 4000)
+    check(abs(20 * log10(low.l / low.r)) < 0.5, "below the crossover a hard-left source is centred",
+          "\(fmt(20 * log10(low.l / low.r))) dB")
+    check(20 * log10(high.l / high.r) > 6, "above it the same source stays on the left",
+          "\(fmt(20 * log10(high.l / high.r))) dB")
+}
+
+section("Binaural latency and block independence")
+do {
+    var profile = BinauralProfile.virtualSpeakers
+    profile.bassCrossoverHz = 0
+    profile.lfe = LFESettings(mode: .off)
+    let cfg = binauralConfig(profile)
+
+    let proc = SoundMixProcessor()
+    proc.applyNow(cfg)
+    proc.prepare(sampleRate: sr)
+    proc.applyNow(cfg)
+    let reportedSamples = (proc.latencyMS / 1000 * sr).rounded()
+
+    let out = renderStereo(cfg, totalFrames: 256, fill: { f, c in
+        f == 0 && c == BedChannel.c.rawValue ? 1 : 0
+    })
+    // The reported latency is the bulk delay of the bank, so the honest
+    // comparison is against the centroid of the rendered impulse, not its peak.
+    var weighted = 0.0, total = 0.0, peakIndex = 0, peak = 0.0
+    for f in 0..<256 {
+        let a = abs(out[f * 2])
+        weighted += Double(f) * a
+        total += a
+        if a > peak { peak = a; peakIndex = f }
+    }
+    near(weighted / total, reportedSamples, 0.5,
+         "the impulse arrives exactly when the reported latency says")
+    check(abs(Double(peakIndex) - reportedSamples) <= 2,
+          "and its peak lands within a couple of samples of that", "peak at \(peakIndex)")
+
+    var noise = TestNoise()
+    var table = [Float](repeating: 0, count: 700 * 16)
+    for i in 0..<(700 * 16) { table[i] = Float(noise.next()) }
+    let fill: (Int, Int) -> Float = { f, c in table[f * 16 + c] }
+    let big = renderStereo(binauralConfig(.virtualSpeakers), totalFrames: 700, blockFrames: 512, fill: fill)
+    let small = renderStereo(binauralConfig(.virtualSpeakers), totalFrames: 700, blockFrames: 37, fill: fill)
+    let single = renderStereo(binauralConfig(.virtualSpeakers), totalFrames: 700, blockFrames: 1, fill: fill)
+    var worst = 0.0
+    for i in 0..<(700 * 2) {
+        worst = max(worst, abs(big[i] - small[i]), abs(big[i] - single[i]))
+    }
+    near(worst, 0, 1e-12, "the output does not depend on the buffer size it was rendered in")
+}
+
+section("Binaural render cost")
+do {
+    let cfg = binauralConfig(.virtualSpeakers, headroom: .powerPreserving)
+    let seconds = 10.0
+    let total = Int(sr * seconds)
+    var noise = TestNoise()
+    var table = [Float](repeating: 0, count: 512 * 16)
+    for i in 0..<(512 * 16) { table[i] = Float(noise.next()) }
+    let start = Date()
+    _ = renderStereo(cfg, totalFrames: total, blockFrames: 512,
+                     fill: { f, c in table[(f % 512) * 16 + c] })
+    let elapsed = Date().timeIntervalSince(start)
+    let realtimeFactor = seconds / max(elapsed, 1e-9)
+    check(realtimeFactor > 20, "the binaural fold renders well faster than real time",
+          String(format: "%.0fx real time", realtimeFactor))
+    print("       \(String(format: "%.0fx", realtimeFactor)) real time at 48 kHz, 16 channels in")
+
+    // The bank lengthens with the rate and the block count rises with it, so
+    // the cost grows faster than linearly. 192 kHz is the worst case a device
+    // can ask for.
+    for rate in [96_000.0, 192_000.0] {
+        let frames = Int(rate * 4)
+        let begin = Date()
+        _ = renderStereo(cfg, sampleRate: rate, totalFrames: frames, blockFrames: 512,
+                         fill: { f, c in table[(f % 512) * 16 + c] })
+        let factor = 4.0 / max(Date().timeIntervalSince(begin), 1e-9)
+        check(factor > 2, "still faster than real time at \(Int(rate / 1000)) kHz",
+              String(format: "%.1fx real time", factor))
+        print("       \(String(format: "%.1fx", factor)) real time at \(Int(rate / 1000)) kHz")
+    }
 }
 
 print("\n\(checks - failures)/\(checks) checks passed")

@@ -7,3 +7,6 @@
 # Local memory notes
 MEMORY.md
 PLAN.md
+
+# Generated macOS installers
+SoundMix/dist/

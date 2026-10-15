@@ -56,7 +56,7 @@
 <ul>
 <li><strong>5.1.2, 5.1.4, 7.1.2, 7.1.4, 9.1.6</strong>: Immersive layouts with height channels.</li>
 </ol>
-<p><em>Note: SoundMix expects decoded PCM audio beds. It is not an Atmos object renderer or a binaural/HRTF spatializer. It performs a traditional amplitude-panned downmix.</em></p>
+<p><em>Note: SoundMix expects decoded PCM audio beds &mdash; it is not an Atmos object renderer. Beds can be folded either by an amplitude matrix (for speakers) or by a head-related filter bank (for headphones); see Binaural / HRTF Fold below.</em></p>
 
 <h3>Downmix Recipes (Matrix)</h3>
 <p>In the <strong>Downmix</strong> panel, choose a recipe that dictates how surround and height channels are folded into the left and right speakers.</p>
@@ -67,6 +67,24 @@
 <ul>
 <li><strong>Direct</strong>: Passes only the Left and Right channels, ignoring the rest.</li>
 </ul>
+<h3>Binaural / HRTF Fold (Headphones)</h3>
+<p>The <strong>Fold</strong> card in the Downmix panel chooses how the bed becomes two channels.</p>
+<ul>
+<li><strong>Amplitude matrix</strong> scales each channel by a coefficient and sums it. This is the correct fold for loudspeakers, and the only mode that can reproduce the original application.</li>
+<li><strong>Binaural / HRTF</strong> filters each channel with the response of a head listening to a loudspeaker at that channel's own angle, so the channels arrive from their own directions instead of being panned between two points. <strong>For headphones only</strong> &mdash; on speakers, the crosstalk between the two of them undoes the effect and the result sounds wrong.</li>
+</ul>
+<p><strong>The head is synthesised, not measured.</strong> No measured HRTF dataset ships with SoundMix. The bank is generated from first principles at your device's sample rate:</p>
+<ul>
+<li><strong>Virtual speakers (spherical head)</strong>: inter-aural delay from the Woodworth model, head shadowing from the Brown-Duda sphere, a pinna notch whose frequency climbs with elevation, and a high-frequency roll-off on rear channels to separate front from back.</li>
+<li><strong>Virtual speakers (wide head)</strong>: the same, with a larger head and a stronger rear cue.</li>
+<li><strong>Headphone crossfeed</strong>: no head model at all &mdash; each ear simply hears a short, rolled-off copy of the opposite side.</li>
+</ul>
+<p>Because the head is generic rather than yours, a generic HRTF colours timbre, and front/back confusion and an in-head image are normal rather than faults. If the fold sounds wrong rather than merely different, crossfeed is the conservative option.</p>
+<p><strong>Controls.</strong> <em>Head radius</em> sets both the inter-aural delay and the corner frequency of the head shadow. <em>Bass crossover</em> is the frequency below which the fold collapses to the centre, because the ear takes no direction from the bottom octaves and filtering them per-ear only causes comb filtering; set it to 0 to switch the split off. <em>Rear damping</em> is how much high frequency a channel directly behind you loses &mdash; the cue a sphere cannot provide on its own. <em>Elevation cue</em> is the depth of the pinna notch that rises with height.</p>
+<p>The table below the controls shows, for every mapped channel, the angle it is placed at, its inter-aural delay in microseconds, and the level it reaches each ear at.</p>
+<p><strong>What it costs.</strong> The fold adds its own bulk delay &mdash; a fraction of a millisecond, reported in the Monitor panel &mdash; and it is the most expensive stage in the chain, though still a small fraction of one core. The LFE never goes through the bank; it keeps its own filter and gain exactly as in the matrix fold. Peak-safe bounds a filter bank by the sum of its absolute taps, which is a far deeper cut than on a matrix, so power-preserving is the usable trim here.</p>
+<p><strong>Not included:</strong> no room simulation or early reflections, no head tracking, and no loading of measured SOFA datasets.</p>
+
 <h3>LFE (Low-Frequency Effects)</h3>
 <p>The LFE channel (.1) is handled separately from ordinary bass managed by your speakers.</p>
 <ul>

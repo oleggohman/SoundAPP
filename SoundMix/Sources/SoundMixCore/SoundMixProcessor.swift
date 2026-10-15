@@ -14,6 +14,10 @@ public struct ProcessorConfiguration: Equatable, Sendable {
     public var limiter: TruePeakLimiter.Settings
     /// `nil` lets the processor align the dry path to the LFE filter's DC group delay.
     public var lfeDelayOverrideSamples: Int?
+    /// When set, the bed is folded through a head-related filter bank instead of
+    /// `recipe`'s amplitude matrix. The recipe is kept so the interface can show
+    /// what the amplitude fold would have been, but it is not rendered.
+    public var binaural: BinauralProfile?
 
     public init(layout: LayoutPreset = .nativeBed,
                 recipe: MatrixRecipe = .reference,
@@ -24,7 +28,8 @@ public struct ProcessorConfiguration: Equatable, Sendable {
                 speakerPEQLeft: PEQProfile = .flat,
                 speakerPEQRight: PEQProfile = .flat,
                 limiter: TruePeakLimiter.Settings = .init(),
-                lfeDelayOverrideSamples: Int? = nil) {
+                lfeDelayOverrideSamples: Int? = nil,
+                binaural: BinauralProfile? = nil) {
         self.layout = layout
         self.recipe = recipe
         self.headroomMode = headroomMode
@@ -35,6 +40,7 @@ public struct ProcessorConfiguration: Equatable, Sendable {
         self.speakerPEQRight = speakerPEQRight
         self.limiter = limiter
         self.lfeDelayOverrideSamples = lfeDelayOverrideSamples
+        self.binaural = binaural
     }
 
     /// The matrix this configuration produces, restricted to the channels the
@@ -43,13 +49,61 @@ public struct ProcessorConfiguration: Equatable, Sendable {
         recipe.matrix().restricted(to: layout.activeChannels)
     }
 
+    public var isBinaural: Bool { binaural != nil }
+
+    /// The LFE handling the active fold asks for. The LFE never goes through the
+    /// filter bank — direction is not carried down there — so both folds treat
+    /// it the same way, with their own cutoff, slope and gain.
+    public var lfeSettings: LFESettings { binaural?.lfe ?? recipe.lfeSettings }
+
+    /// The rate the binaural headroom figures are computed at. The bank itself
+    /// is built for the device rate, but the trim comes from the 48 kHz bank so
+    /// that the level does not shift when the device changes rate. The figures
+    /// move by hundredths of a dB between rates; the limiter remains the final
+    /// guarantee either way.
+    public static let binauralReferenceSampleRate = 48_000.0
+
+    /// The filter bank this configuration folds through, or `nil` in matrix mode.
+    public func bank(sampleRate: Double) -> HRIRBank? {
+        guard let profile = binaural else { return nil }
+        return HRIRBank.cached(profile: profile, sampleRate: sampleRate)
+    }
+
+    /// Worst-case (L1) and uncorrelated (L2) gain of whichever fold is active.
+    ///
+    /// For the matrix these are the norms of its coefficients. For the filter
+    /// bank they are the same norms taken over whole impulse responses — the
+    /// sum of absolute taps bounds the peak, the root of the summed tap energy
+    /// gives the level for uncorrelated material — with the LFE row counted
+    /// exactly as the matrix path counts it.
+    public var foldGains: (peak: Double, power: Double) {
+        guard let profile = binaural else {
+            let m = effectiveMatrix
+            return (m.worstCasePeakGain, m.uncorrelatedGain)
+        }
+        let bank = HRIRBank.cached(profile: profile,
+                                   sampleRate: Self.binauralReferenceSampleRate)
+        let channels = layout.activeChannels
+        var peak = bank.worstCasePeakGain(for: channels)
+        var power = bank.uncorrelatedGain(for: channels)
+        if channels.contains(.lfe), profile.lfe.mode != .off {
+            let g = abs(SoundMixMatrix.linear(profile.lfe.gainDB))
+            peak += g
+            power = (power * power + g * g).squareRoot()
+        }
+        return (peak, power)
+    }
+
+    public var foldPeakGainDB: Double { SoundMixMatrix.dB(foldGains.peak) }
+    public var foldPowerGainDB: Double { SoundMixMatrix.dB(foldGains.power) }
+
     /// The automatic trim in dB that `headroomMode` asks for.
     public var automaticTrimDB: Double {
-        let m = effectiveMatrix
+        let gains = foldGains
         switch headroomMode {
         case .none:            return 0
-        case .peakSafe:        return m.worstCasePeakGain > 1 ? -m.worstCasePeakGainDB : 0
-        case .powerPreserving: return m.uncorrelatedGain > 1 ? -m.uncorrelatedGainDB : 0
+        case .peakSafe:        return gains.peak > 1 ? -SoundMixMatrix.dB(gains.peak) : 0
+        case .powerPreserving: return gains.power > 1 ? -SoundMixMatrix.dB(gains.power) : 0
         }
     }
 
@@ -68,6 +122,16 @@ public struct ProcessorConfiguration: Equatable, Sendable {
 ///                                                                           ▼
 ///              global PEQ (both channels) → swap → speaker PEQ L/R → limiter → out
 /// ```
+///
+/// In binaural mode the matrix is replaced by a head-related filter bank, and
+/// the bass is split out of it so direction is only imposed where the ear can
+/// use it:
+///
+/// ```
+/// bed[16] ─┬── HRIR bank (15 convolutions) → L/R → LR4 high-pass ─┐
+///          ├── Σ bass weights → delay → LR4 low-pass ─────────────┤ (both ears)
+///          └── LFE → (low-pass | dry | off) → ×gain ──────────────┘
+/// ```
 private final class ProcessorRenderState: @unchecked Sendable {
 
     // Audio-thread state -----------------------------------------------------
@@ -85,6 +149,21 @@ private final class ProcessorRenderState: @unchecked Sendable {
     private var dryDelay: [Double] = []            // interleaved L,R
     private var dryDelayFrames = 0
     private var dryDelayIndex = 0
+
+    // Binaural fold. Everything here is unused in matrix mode.
+    static let blockCapacity = 512
+    private var binauralEngine: BinauralFoldEngine?
+    private var bank: HRIRBank?
+    private var bedBlocks: [Double] = []
+    private var foldL: [Double] = [], foldR: [Double] = []
+    private var lfeBlock: [Double] = [], bassBlock: [Double] = []
+    private var bassWeights = [Double](repeating: 0, count: BedChannel.count)
+    private let bassLowPass = BiquadChain()
+    private let bassHighLeft = BiquadChain(), bassHighRight = BiquadChain()
+    private var crossoverEnabled = false
+    private var bassDelay: [Double] = []
+    private var bassDelayFrames = 0
+    private var bassDelayIndex = 0
 
     private var bed = [Double](repeating: 0, count: BedChannel.count)
     private var snapshotPeaks = [Double](repeating: -.infinity, count: BedChannel.count)
@@ -134,11 +213,54 @@ private final class ProcessorRenderState: @unchecked Sendable {
         let trimDB = config.totalTrimDB
         appliedTrimDB = trimDB
         let trim = SoundMixMatrix.linear(trimDB)
-        let matrix = config.effectiveMatrix.scaled(by: trim)
+        let lfeConfig = config.lfeSettings
 
-        for ch in BedChannel.allCases {
-            coefficients[ch.rawValue * 2] = matrix[ch].left
-            coefficients[ch.rawValue * 2 + 1] = matrix[ch].right
+        if let profile = config.binaural {
+            // The trim is baked into the taps and the bass weights, so the fold
+            // output is already at its final level before the EQ sees it.
+            let generated = HRIRBank.cached(profile: profile, sampleRate: sampleRate)
+                .scaled(by: trim)
+            bank = generated
+            binauralEngine = BinauralFoldEngine(bank: generated,
+                                                blockCapacity: Self.blockCapacity)
+            allocateBlockBuffers()
+            for c in 0..<BedChannel.count { bassWeights[c] = generated.bassWeights[c] }
+
+            // Only the LFE row of the matrix is used in binaural mode.
+            for i in coefficients.indices { coefficients[i] = 0 }
+            let g = lfeConfig.mode == .off ? 0 : SoundMixMatrix.linear(lfeConfig.gainDB) * trim
+            coefficients[BedChannel.lfe.rawValue * 2] = g
+            coefficients[BedChannel.lfe.rawValue * 2 + 1] = g
+
+            if profile.bassCrossoverHz > 20, profile.bassCrossoverHz < sampleRate * 0.45 {
+                let xo = BiquadDesign.linkwitzRiley4(frequency: profile.bassCrossoverHz,
+                                                     sampleRate: sampleRate)
+                bassLowPass.update(xo.low)
+                bassHighLeft.update(xo.high)
+                bassHighRight.update(xo.high)
+                crossoverEnabled = true
+                bassDelayFrames = generated.referenceDelaySamples
+            } else {
+                bassLowPass.update(BiquadCascade())
+                bassHighLeft.update(BiquadCascade())
+                bassHighRight.update(BiquadCascade())
+                crossoverEnabled = false
+                bassDelayFrames = 0
+            }
+            if bassDelay.count != bassDelayFrames {
+                bassDelay = Array(repeating: 0, count: bassDelayFrames)
+                bassDelayIndex = 0
+            }
+        } else {
+            bank = nil
+            binauralEngine = nil
+            crossoverEnabled = false
+            bassDelayFrames = 0
+            let matrix = config.effectiveMatrix.scaled(by: trim)
+            for ch in BedChannel.allCases {
+                coefficients[ch.rawValue * 2] = matrix[ch].left
+                coefficients[ch.rawValue * 2 + 1] = matrix[ch].right
+            }
         }
 
         for ch in BedChannel.allCases {
@@ -149,7 +271,7 @@ private final class ProcessorRenderState: @unchecked Sendable {
         swap = config.swapOutputs
 
         // LFE path.
-        switch config.recipe.lfeMode {
+        switch lfeConfig.mode {
         case .off:
             lfeEnabled = false
             lfeFilter.update(BiquadCascade())
@@ -159,14 +281,14 @@ private final class ProcessorRenderState: @unchecked Sendable {
         case .lowPass:
             lfeEnabled = true
             lfeFilter.update(BiquadDesign.butterworthLowPass(
-                frequency: config.recipe.lfeCutoffHz,
-                order: config.recipe.lfeFilterOrder,
+                frequency: lfeConfig.cutoffHz,
+                order: lfeConfig.filterOrder,
                 sampleRate: sampleRate))
         }
 
         // Align the dry path with the LFE filter so the bass sums in phase.
         let autoDelay: Int
-        if config.recipe.lfeMode == .lowPass, lfeEnabled {
+        if lfeConfig.mode == .lowPass, lfeEnabled {
             let tau = lfeFilter.cascade.groupDelay(at: 0, sampleRate: sampleRate)
             autoDelay = max(0, Int(tau.rounded()))
         } else {
@@ -186,6 +308,21 @@ private final class ProcessorRenderState: @unchecked Sendable {
         limiter.update(settings: config.limiter, sampleRate: sampleRate)
     }
 
+    /// Allocated once per render state, on the control thread, so the audio
+    /// thread never sizes a buffer.
+    private func allocateBlockBuffers() {
+        let cap = Self.blockCapacity
+        if bedBlocks.count != BedChannel.count * cap {
+            bedBlocks = Array(repeating: 0, count: BedChannel.count * cap)
+        }
+        if foldL.count != cap {
+            foldL = Array(repeating: 0, count: cap)
+            foldR = Array(repeating: 0, count: cap)
+            lfeBlock = Array(repeating: 0, count: cap)
+            bassBlock = Array(repeating: 0, count: cap)
+        }
+    }
+
     func inheritHistory(from previous: ProcessorRenderState) {
         lfeFilter.inheritHistory(from: previous.lfeFilter)
         globalLeft.inheritHistory(from: previous.globalLeft)
@@ -193,6 +330,16 @@ private final class ProcessorRenderState: @unchecked Sendable {
         speakerLeft.inheritHistory(from: previous.speakerLeft)
         speakerRight.inheritHistory(from: previous.speakerRight)
         limiter.inheritHistory(from: previous.limiter)
+        bassLowPass.inheritHistory(from: previous.bassLowPass)
+        bassHighLeft.inheritHistory(from: previous.bassHighLeft)
+        bassHighRight.inheritHistory(from: previous.bassHighRight)
+        if let engine = binauralEngine, let old = previous.binauralEngine {
+            engine.inheritHistory(from: old)
+        }
+        if bassDelay.count == previous.bassDelay.count {
+            for i in bassDelay.indices { bassDelay[i] = previous.bassDelay[i] }
+            bassDelayIndex = previous.bassDelayIndex
+        }
         if dryDelay.count == previous.dryDelay.count {
             for i in dryDelay.indices { dryDelay[i] = previous.dryDelay[i] }
             dryDelayIndex = previous.dryDelayIndex
@@ -205,6 +352,10 @@ private final class ProcessorRenderState: @unchecked Sendable {
     public func reset() {
         lfeFilter.reset(); globalLeft.reset(); globalRight.reset()
         speakerLeft.reset(); speakerRight.reset(); limiter.reset()
+        bassLowPass.reset(); bassHighLeft.reset(); bassHighRight.reset()
+        binauralEngine?.reset()
+        for i in bassDelay.indices { bassDelay[i] = 0 }
+        bassDelayIndex = 0
         for i in dryDelay.indices { dryDelay[i] = 0 }
         dryDelayIndex = 0
         for i in bedMeters.indices { bedMeters[i].reset() }
@@ -216,7 +367,9 @@ private final class ProcessorRenderState: @unchecked Sendable {
 
     /// Total added latency of the processing chain, in milliseconds.
     public var latencyMS: Double {
-        (Double(dryDelayFrames == 1 ? 0 : dryDelayFrames) + Double(limiter.latencySamples))
+        (Double(dryDelayFrames == 1 ? 0 : dryDelayFrames)
+            + Double(limiter.latencySamples)
+            + Double(bank?.referenceDelaySamples ?? 0))
             / sampleRate * 1000
     }
 
@@ -225,6 +378,62 @@ private final class ProcessorRenderState: @unchecked Sendable {
     /// Fold `frames` of interleaved input into interleaved stereo output.
     public func process(input: UnsafePointer<Float>, inputChannels: Int, frames: Int,
                         output: UnsafeMutablePointer<Float>) {
+        if let engine = binauralEngine {
+            processBinaural(engine: engine, input: input, inputChannels: inputChannels,
+                            frames: frames, output: output)
+        } else {
+            processMatrix(input: input, inputChannels: inputChannels,
+                          frames: frames, output: output)
+        }
+        publishSnapshot()
+    }
+
+    /// Everything after the fold: the LFE sum, the dry delay, both EQ stages,
+    /// the output swap and the limiter. Shared by both folds so the output
+    /// stage can only ever behave one way.
+    @inline(__always)
+    private func finishFrame(_ dryL: Double, _ dryR: Double, lfeRaw: Double) -> (Double, Double) {
+        // Delay the dry path by the LFE filter's group delay.
+        var outL: Double, outR: Double
+        if dryDelayFrames > 1 {
+            let idx = dryDelayIndex * 2
+            outL = dryDelay[idx]
+            outR = dryDelay[idx + 1]
+            dryDelay[idx] = dryL
+            dryDelay[idx + 1] = dryR
+            dryDelayIndex = (dryDelayIndex + 1) % dryDelayFrames
+        } else {
+            outL = dryL
+            outR = dryR
+        }
+
+        if lfeEnabled {
+            let lfe = lfeFilter.cascade.sections.isEmpty ? lfeRaw : lfeFilter.process(lfeRaw)
+            outL += lfe * coefficients[BedChannel.lfe.rawValue * 2]
+            outR += lfe * coefficients[BedChannel.lfe.rawValue * 2 + 1]
+        }
+
+        // Global PEQ, applied to both channels before the swap.
+        if !globalLeft.cascade.isTransparent {
+            outL = globalLeft.process(outL)
+            outR = globalRight.process(outR)
+        }
+
+        if swap { Swift.swap(&outL, &outR) }
+
+        // Speaker correction, applied to the physical outputs after the swap.
+        if !speakerLeft.cascade.isTransparent { outL = speakerLeft.process(outL) }
+        if !speakerRight.cascade.isTransparent { outR = speakerRight.process(outR) }
+
+        limiter.process(&outL, &outR)
+
+        meterLeft.accumulate(outL)
+        meterRight.accumulate(outR)
+        return (outL, outR)
+    }
+
+    private func processMatrix(input: UnsafePointer<Float>, inputChannels: Int, frames: Int,
+                               output: UnsafeMutablePointer<Float>) {
         for f in 0..<frames {
             let base = f * inputChannels
 
@@ -244,49 +453,78 @@ private final class ProcessorRenderState: @unchecked Sendable {
                 dryR += v * coefficients[c * 2 + 1]
             }
 
-            // Delay the dry path by the LFE filter's group delay.
-            var outL: Double, outR: Double
-            if dryDelayFrames > 1 {
-                let idx = dryDelayIndex * 2
-                outL = dryDelay[idx]
-                outR = dryDelay[idx + 1]
-                dryDelay[idx] = dryL
-                dryDelay[idx + 1] = dryR
-                dryDelayIndex = (dryDelayIndex + 1) % dryDelayFrames
-            } else {
-                outL = dryL
-                outR = dryR
-            }
-
-            if lfeEnabled {
-                let lfeRaw = bed[BedChannel.lfe.rawValue]
-                let lfe = lfeFilter.cascade.sections.isEmpty ? lfeRaw : lfeFilter.process(lfeRaw)
-                outL += lfe * coefficients[BedChannel.lfe.rawValue * 2]
-                outR += lfe * coefficients[BedChannel.lfe.rawValue * 2 + 1]
-            }
-
-            // Global PEQ, applied to both channels before the swap.
-            if !globalLeft.cascade.isTransparent {
-                outL = globalLeft.process(outL)
-                outR = globalRight.process(outR)
-            }
-
-            if swap { Swift.swap(&outL, &outR) }
-
-            // Speaker correction, applied to the physical outputs after the swap.
-            if !speakerLeft.cascade.isTransparent { outL = speakerLeft.process(outL) }
-            if !speakerRight.cascade.isTransparent { outR = speakerRight.process(outR) }
-
-            limiter.process(&outL, &outR)
-
-            meterLeft.accumulate(outL)
-            meterRight.accumulate(outR)
-
+            let (outL, outR) = finishFrame(dryL, dryR, lfeRaw: bed[BedChannel.lfe.rawValue])
             output[f * 2] = Float(outL)
             output[f * 2 + 1] = Float(outR)
         }
+    }
 
-        publishSnapshot()
+    /// The binaural fold has to see a block at a time, so the bed is written
+    /// into per-channel buffers first, convolved, and only then taken back
+    /// through the per-sample output stage. Long buffers are split into chunks
+    /// of `blockCapacity` so nothing is ever sized on the audio thread.
+    private func processBinaural(engine: BinauralFoldEngine,
+                                 input: UnsafePointer<Float>, inputChannels: Int, frames: Int,
+                                 output: UnsafeMutablePointer<Float>) {
+        let cap = Self.blockCapacity
+        var done = 0
+        while done < frames {
+            let n = min(frames - done, cap)
+
+            for f in 0..<n {
+                let base = (done + f) * inputChannels
+                var bass = 0.0
+                for c in 0..<BedChannel.count {
+                    let slot = inputMap[c]
+                    let v = (slot >= 0 && slot < inputChannels) ? Double(input[base + slot]) : 0
+                    bed[c] = v
+                    bedMeters[c].accumulate(v)
+                    bedBlocks[c * cap + f] = v
+                    if c != BedChannel.lfe.rawValue { bass += v * bassWeights[c] }
+                }
+                lfeBlock[f] = bed[BedChannel.lfe.rawValue]
+                bassBlock[f] = bass
+            }
+
+            bedBlocks.withUnsafeBufferPointer { bedBuffer in
+                foldL.withUnsafeMutableBufferPointer { left in
+                    foldR.withUnsafeMutableBufferPointer { right in
+                        engine.process(bed: bedBuffer.baseAddress!, bedStride: cap, frames: n,
+                                       outL: left.baseAddress!, outR: right.baseAddress!)
+                    }
+                }
+            }
+
+            for f in 0..<n {
+                var l = foldL[f], r = foldR[f]
+
+                // Below the crossover the fold collapses to the centre: the ear
+                // takes no direction from there, and per-ear filtering of the
+                // bass only combs. The two legs are Linkwitz-Riley, so they sum
+                // back to a flat magnitude.
+                if crossoverEnabled {
+                    l = bassHighLeft.process(l)
+                    r = bassHighRight.process(r)
+                    var low = bassBlock[f]
+                    if bassDelayFrames > 0 {
+                        let idx = bassDelayIndex
+                        let held = bassDelay[idx]
+                        bassDelay[idx] = low
+                        bassDelayIndex = (idx + 1) % bassDelayFrames
+                        low = held
+                    }
+                    low = bassLowPass.process(low)
+                    l += low
+                    r += low
+                }
+
+                let (outL, outR) = finishFrame(l, r, lfeRaw: lfeBlock[f])
+                output[(done + f) * 2] = Float(outL)
+                output[(done + f) * 2 + 1] = Float(outR)
+            }
+
+            done += n
+        }
     }
 
     private func publishSnapshot() {

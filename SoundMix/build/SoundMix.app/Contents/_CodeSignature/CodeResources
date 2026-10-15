@@ -4,6 +4,10 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<data>
+		qloQ3fNbYyYex/0FMefoRcg+SVo=
+		</data>
 		<key>Resources/Help.md</key>
 		<data>
 		hdeI5g8YEB82kafU4/42G7OUomo=
@@ -16,7 +20,7 @@
 		<dict>
 			<key>hash</key>
 			<data>
-			h/HZsdN/tGMy8w6ETfLDTd7PSU8=
+			vSIdCvx6l45iWzPhbNCd9dx4F+c=
 			</data>
 			<key>optional</key>
 			<true/>
@@ -24,6 +28,13 @@
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			rZv1jVeRI0MYpHR3VpQLnUf4DZirURM81vuz22pOgQU=
+			</data>
+		</dict>
 		<key>Resources/Help.md</key>
 		<dict>
 			<key>hash2</key>
@@ -42,7 +53,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			lZxBSXj/SdnKNzvOCvCUpmMarxSPPf3A0PWGv4kIc+c=
+			AmfJ3iMxPiOMMGxtAH2uGnvJoHwVJ8E5vmCKr86UH4k=
 			</data>
 			<key>optional</key>
 			<true/>

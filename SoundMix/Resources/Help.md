@@ -33,13 +33,41 @@ SoundMix expects a specific channel layout on the input device. In the **Devices
 - **2.0, 2.1, 3.0, 3.1, 4.0, 5.1, 7.1**: Standard surround layouts.
 - **5.1.2, 5.1.4, 7.1.2, 7.1.4, 9.1.6**: Immersive layouts with height channels.
 
-*Note: SoundMix expects decoded PCM audio beds. It is not an Atmos object renderer or a binaural/HRTF spatializer. It performs a traditional amplitude-panned downmix.*
+*Note: SoundMix expects decoded PCM audio beds — it is not an Atmos object renderer. Beds can be folded either by an amplitude matrix (for speakers) or by a head-related filter bank (for headphones); see Binaural / HRTF Fold below.*
 
 ### Downmix Recipes (Matrix)
 In the **Downmix** panel, choose a recipe that dictates how surround and height channels are folded into the left and right speakers.
 - **Reference**: Follows ITU/Dolby guidelines for a standard stereo fold-down.
 - **Parity**: A slightly wider mix, often used for parity with certain hardware decoders.
 - **Direct**: Passes only the Left and Right channels, ignoring the rest.
+
+### Binaural / HRTF Fold (Headphones)
+The **Fold** card in the Downmix panel chooses how the bed becomes two channels.
+
+- **Amplitude matrix** scales each channel by a coefficient and sums it. This is the correct fold for loudspeakers, and the only mode that can reproduce the original application.
+- **Binaural / HRTF** filters each channel with the response of a head listening to a loudspeaker at that channel's own angle, so the channels arrive from their own directions instead of being panned between two points. **For headphones only** — on speakers, the crosstalk between the two of them undoes the effect and the result sounds wrong.
+
+**The head is synthesised, not measured.** No measured HRTF dataset ships with SoundMix. The bank is generated from first principles at your device's sample rate:
+
+- **Virtual speakers (spherical head)**: inter-aural delay from the Woodworth model, head shadowing from the Brown-Duda sphere, a pinna notch whose frequency climbs with elevation, and a high-frequency roll-off on rear channels to separate front from back.
+- **Virtual speakers (wide head)**: the same, with a larger head and a stronger rear cue.
+- **Headphone crossfeed**: no head model at all — each ear simply hears a short, rolled-off copy of the opposite side. Cheap, almost colour-free, and it only loosens the hard-panned stereo image rather than placing channels around you.
+
+Because the head is generic rather than yours, a generic HRTF colours timbre, and front/back confusion and an in-head image are normal rather than faults. If the fold sounds wrong rather than merely different, crossfeed is the conservative option.
+
+**Controls**
+- **Head radius** sets both the inter-aural delay and the corner frequency of the head shadow. Bigger heads give longer delays and a stronger shadow.
+- **Bass crossover** is the frequency below which the fold collapses to the centre. The ear takes no direction from the bottom octaves, and filtering them per-ear only causes comb filtering, so below this point every channel is summed equally to both ears. Set it to 0 to switch the split off. The two halves are Linkwitz-Riley, so they sum back to a flat response.
+- **Rear damping** is how much high-frequency energy a channel directly behind you loses. A sphere alone cannot tell front from back; this is the cue that does.
+- **Elevation cue** is the depth of the pinna notch that rises with height.
+
+The table below the controls shows, for every mapped channel, the angle it is placed at, its inter-aural delay in microseconds, and the level it reaches each ear at.
+
+**What it costs.** The fold adds its own bulk delay — a fraction of a millisecond, reported in the Monitor panel and in the table — and it is the most expensive stage in the chain, though still a small fraction of one core. The LFE never goes through the bank; it keeps its own filter and gain exactly as in the matrix fold.
+
+**Headroom in binaural mode.** Peak-safe bounds a filter bank by the sum of its absolute taps, which is a much deeper cut than the same bound on a matrix. Power-preserving is the usable setting here, with the limiter catching the rest.
+
+**Not included:** no room simulation or early reflections, no head tracking, and no loading of measured SOFA datasets.
 
 ### LFE (Low-Frequency Effects)
 The LFE channel (.1) is handled separately from ordinary bass managed by your speakers.

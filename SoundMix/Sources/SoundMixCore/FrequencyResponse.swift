@@ -50,20 +50,23 @@ public struct FrequencyResponse: Hashable, Codable, Sendable {
     /// Measurement files carry arbitrary absolute levels, so they are only
     /// comparable once anchored somewhere.
     public func normalized(low: Double = 200, high: Double = 2_000) -> FrequencyResponse {
-        let inBand = points.filter { $0.hz >= low && $0.hz <= high }
-        let reference: Double
-        if inBand.isEmpty {
-            reference = magnitudeDB(at: (low * high).squareRoot())
-        } else {
-            reference = inBand.reduce(0) { $0 + $1.db } / Double(inBand.count)
+        // Integrate in log-frequency so file point density cannot change the level.
+        let lo = max(low, range.low), hi = min(high, range.high)
+        guard lo > 0, hi > lo else { return self }
+        let knots = [lo] + points.filter { $0.hz > lo && $0.hz < hi }.map(\.hz) + [hi]
+        var area = 0.0
+        for (a, b) in zip(knots, knots.dropFirst()) {
+            area += (magnitudeDB(at: a) + magnitudeDB(at: b)) * 0.5 * log(b / a)
         }
+        let reference = area / log(hi / lo)
         return FrequencyResponse(name: name,
                                  points: points.map { Point(hz: $0.hz, db: $0.db - reference) })
     }
 
     /// Resample onto a log grid, which is what the plot and the sum both want.
     public func sampled(from low: Double = 20, to high: Double = 20_000, count: Int = 220) -> [Point] {
-        guard count > 1 else { return [] }
+        let low = max(low, range.low), high = min(high, range.high)
+        guard count > 1, low > 0, high > low else { return [] }
         return (0..<count).map { i in
             let hz = low * pow(high / low, Double(i) / Double(count - 1))
             return Point(hz: hz, db: magnitudeDB(at: hz))
@@ -120,7 +123,7 @@ public struct FrequencyResponse: Hashable, Codable, Sendable {
     public func difference(from other: FrequencyResponse,
                            low: Double = 20, high: Double = 20_000,
                            count: Int = 220) -> [Point] {
-        sampled(from: low, to: high, count: count).map {
+        sampled(from: max(low, other.range.low), to: min(high, other.range.high), count: count).map {
             Point(hz: $0.hz, db: $0.db - other.magnitudeDB(at: $0.hz))
         }
     }
@@ -205,8 +208,12 @@ public struct FrequencyResponse: Hashable, Codable, Sendable {
     /// The curve you will hear: the measurement plus everything the EQ does.
     public func corrected(by cascade: BiquadCascade, sampleRate: Double,
                           count: Int = 220) -> [Point] {
-        sampled(count: count).map {
-            Point(hz: $0.hz, db: $0.db + cascade.magnitudeDB(at: $0.hz, sampleRate: sampleRate))
+        // Keep measurement knots: flat EQ must preserve the original interpolated shape.
+        let frequencies = Set(sampled(count: count).map(\.hz) + points.filter {
+            $0.hz >= 20 && $0.hz <= 20_000
+        }.map(\.hz)).sorted()
+        return frequencies.map {
+            Point(hz: $0, db: magnitudeDB(at: $0) + cascade.magnitudeDB(at: $0, sampleRate: sampleRate))
         }
     }
 }

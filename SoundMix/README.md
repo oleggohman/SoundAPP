@@ -20,6 +20,33 @@ manager, no network access.
 
 ---
 
+## Versioning
+
+`VERSION` is the release version (`major.minor.patch`), currently `1.1.0`.
+Edit it when releasing a patch, feature, or breaking change. `./build.sh` stamps
+that version into the app and increments the build number from the existing local
+app bundle. A clean build directory starts at build 1. For a release or CI build,
+choose an explicit number with `BUILD_NUMBER=42 ./build.sh`.
+
+The sidebar and macOS About dialog read the version and build from the app bundle.
+Restart the rebuilt app to see the updated values.
+
+## macOS DMG installer
+
+Run `./build-dmg.sh` to rebuild the app and package a compressed installer in
+`dist/SoundMix-<version>-build-<number>.dmg`. Use `./build-dmg.sh --skip-build`
+to package the existing app without incrementing its build number. Existing DMGs
+are never overwritten. Set `BUILD_NUMBER=42 ./build-dmg.sh` for an explicit build.
+
+Open the DMG, drag **SoundMix.app** onto **Applications**, eject the image, and
+launch SoundMix from Applications. Quit an older running copy before replacing it.
+The image contains the app, an Applications shortcut, and installation instructions.
+The packager verifies the app signature and disk-image checksum.
+
+These local builds require macOS 14 or later and target the build machine's
+architecture. They are ad-hoc signed; Developer ID signing and Apple notarization
+for public distribution are not configured.
+
 ## What changed
 
 | | Downmix Renderer 0.0.0 | SoundMix |
@@ -37,8 +64,9 @@ manager, no network access.
 | **Output channels** | exactly 2, plus a hard-coded quirk list (`fosi`, `ds2`, `cs43131`) | any device with ≥ 2 outputs |
 | **LFE filter** | fixed 125 Hz, 4th-order Butterworth | mode, cut-off and slope all adjustable |
 | **Offline rendering** | none — live device only | internal testing only |
+| **Headphone rendering** | none | binaural fold: 16 bed channels convolved with a synthesised head-related bank, 15 convolutions per block |
 | **Earphone correction** | PEQ text only | pair a measured response with each EQ profile; plot measured, EQ and corrected together |
-| **Tests** | none shipped | **256** automated checks, including real file renders |
+| **Tests** | none shipped | **312** automated checks, including real file renders |
 
 ## The matrix problem, and the fix
 
@@ -103,6 +131,67 @@ will actually hear, plus how far that result still deviates across the band.
 The measurement is stored inside the profile, so it saves, exports and imports with it.
 Upload it from either the profile detail or the Response card.
 
+## Graphical PEQ editing
+
+In **Output EQ → Response**, click **Expand & edit PEQ** for a native full-screen
+editor. Use the green window control to return to a resizable window.
+
+- Choose **Global**, **Speaker L**, or **Speaker R**.
+- Drag a numbered band vertically to change gain. Horizontal dragging never
+  changes frequency; use the frequency field for deliberate frequency edits.
+- Select a band to adjust Q, filter type, or enabled state. Add/delete bands and
+  adjust the stage preamp with the controls beside the plot.
+- The orange dashed reference shows the EQ when the editor opened, or at the last
+  Apply. The horizontal dashed line marks 0 dB. The lower plot previews the combined
+  result against the measured response and target, when loaded.
+- **Reset** discards unapplied edits across all three stages.
+- **Apply** updates the current EQ and running audio while keeping the editor open.
+  **Apply & close** also closes it. **Cancel** discards edits since the last Apply.
+
+Use **Save** in the main profile library to keep the applied EQ in that profile.
+Bypass is preserved. Speaker editing follows physical L/R routing, including swapped
+outputs. Edits preserve other channels, disabled filters, preamps and numeric
+precision. Edited documents are rewritten in supported APO syntax; their comments
+and formatting are not retained. Resolve parser warnings in the text editor first.
+If the profile changes in the main window, reopen the graphical editor before applying.
+
+## Binaural / HRTF fold
+
+The **Fold** card chooses how the bed becomes two channels: the amplitude matrix, which is
+right for speakers, or a head-related filter bank, which is right for headphones. In
+binaural mode every bed channel is convolved with the response of a head listening to a
+loudspeaker at that channel's own angle, so the channels arrive from their own directions
+instead of being panned between two points.
+
+No measured dataset ships with the application — nothing to license, nothing to download,
+and nothing that only works at one sample rate. The bank is synthesised for the running
+device rate from Woodworth inter-aural delay and the Brown-Duda spherical head shadow, with
+a pinna notch that climbs with elevation and a high-frequency roll-off on rear channels to
+separate front from back. A dataset-free crossfeed bank is there as the conservative option,
+and a measured SOFA set could be loaded into the same engine later without touching the
+renderer.
+
+Three things make it cheap and honest:
+
+- **Half the convolutions.** The bank is an exact mirror pair by pair, so each pair folds
+  through the sum and difference of its two channels rather than four separate filters:
+  fifteen convolutions per block instead of twenty-nine, through `vDSP_convD`, with every
+  buffer allocated on the control thread.
+- **The same level discipline.** The headroom figures are the matrix's own L1 and L2 norms
+  taken over whole impulse responses — the sum of absolute taps bounds the peak, the root of
+  the summed tap energy gives the level for uncorrelated material — so peak-safe and
+  power-preserving mean exactly what they do in matrix mode. A signal built specifically to
+  reach the peak bound lands at full scale and not a sample above it.
+- **Bass stays where the ear can use it.** Below the crossover the fold collapses to the
+  centre through a Linkwitz-Riley split, because direction is not carried down there and
+  per-ear filtering of the bottom octaves only combs. The two halves sum back flat to within
+  0.35 dB, and the LFE never enters the bank at all.
+
+It renders about 30× faster than real time at 48 kHz with all sixteen channels fed, 15× at
+96 kHz and 7× at 192 kHz — the bank lengthens with the rate, so the cost grows faster than
+linearly — and adds a third of a millisecond of bulk delay, which is reported in the Monitor
+panel and included in the latency accounting.
+
 ## Layout
 
 ```
@@ -112,6 +201,9 @@ Sources/
     Biquad.swift            biquads, RBJ designers, Butterworth cascades, group delay
     APOParser.swift         REW / Equalizer APO text → filters
     SoundMixMatrix.swift     matrix, recipes, headroom analysis
+    BinauralProfile.swift   binaural profiles, LFE settings shared by both folds
+    HRIRBank.swift          speaker geometry and the synthesised filter bank
+    BinauralFold.swift      the render-side convolution engine
     TruePeakLimiter.swift   4× oversampled look-ahead limiter
     Metering.swift          meters and the UI snapshot
     SoundMixProcessor.swift  the real-time chain
@@ -124,7 +216,7 @@ Sources/
     SoundMixEngine.swift    two AUHAL units, bring-up, device-loss handling
     OfflineRenderer.swift   file in, stereo file out, same chain
   SoundMixApp/       SwiftUI, SoundMix design system
-Tests/main.swift    193 checks
+Tests/main.swift    253 checks
 ```
 
 ## Interface
@@ -136,7 +228,9 @@ UI library — and every colour comes from a named token in `Sources/SoundMixApp
 
 ## Known limits
 
-- No binaural / HRTF mode.
+- Binaural mode is synthesised, not measured: there is no SOFA import, no room simulation or
+  early reflections, and no head tracking. A generic head colours timbre, and front/back
+  confusion is a property of generic HRTFs rather than a defect here.
 - Input and output must run at the same sample rate. SoundMix asks Core Audio to match
   the input to the output and reports clearly when the device refuses, instead of performing arbitrary sample-rate conversion. A continuously adjusted
   windowed-sinc bridge compensates for small differences between independent device clocks.

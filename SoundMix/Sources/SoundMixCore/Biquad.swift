@@ -213,6 +213,27 @@ public enum BiquadDesign {
         return BiquadCascade(sections: sections)
     }
 
+    /// Second-order high-pass with explicit Q, the mirror of `lowPass`.
+    public static func highPass(frequency: Double, q: Double, sampleRate: Double) -> Biquad {
+        let w0 = 2 * Double.pi * clampFrequency(frequency, sampleRate) / sampleRate
+        let cw = cos(w0), sw = sin(w0)
+        let alpha = sw / (2 * max(q, 1e-4))
+        return Biquad(b0: (1 + cw) / 2, b1: -(1 + cw), b2: (1 + cw) / 2,
+                      a0: 1 + alpha, a1: -2 * cw, a2: 1 - alpha)
+    }
+
+    /// A 4th-order Linkwitz-Riley crossover pair: two cascaded Butterworth
+    /// sections per leg. The two legs sum to an all-pass, so splitting a signal
+    /// with this pair and adding the halves back leaves the magnitude flat —
+    /// which is what the binaural bass path relies on.
+    public static func linkwitzRiley4(frequency: Double, sampleRate: Double)
+        -> (low: BiquadCascade, high: BiquadCascade) {
+        let q = 0.5.squareRoot()
+        let lp = lowPass(frequency: frequency, q: q, sampleRate: sampleRate)
+        let hp = highPass(frequency: frequency, q: q, sampleRate: sampleRate)
+        return (BiquadCascade(sections: [lp, lp]), BiquadCascade(sections: [hp, hp]))
+    }
+
     @inline(__always)
     static func clampFrequency(_ f: Double, _ sampleRate: Double) -> Double {
         min(max(f, 1.0), sampleRate * 0.49)

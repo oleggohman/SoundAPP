@@ -6,6 +6,12 @@
 	<string>SoundMix</string>
 	<key>CFBundleExecutable</key>
 	<string>SoundMix</string>
+	<key>CFBundleHelpBookFolder</key>
+	<string>SoundMix.help</string>
+	<key>CFBundleHelpBookName</key>
+	<string>io.soundmix.app.help</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.soundmix.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -15,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>11</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
 	<key>LSMinimumSystemVersion</key>
@@ -28,9 +34,5 @@
 	<string>SoundMix opens the selected audio interface as an input so it can fold its multichannel bed down to stereo in real time.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>CFBundleHelpBookFolder</key>
-	<string>SoundMix.help</string>
-	<key>CFBundleHelpBookName</key>
-	<string>io.soundmix.app.help</string>
 </dict>
 </plist>

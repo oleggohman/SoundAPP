@@ -32,7 +32,8 @@ struct ResponseCurve: View {
         /// Value at a frequency, interpolated in log-frequency like the curves
         /// themselves, so the readout matches what is drawn.
         func value(at hz: Double) -> Double? {
-            guard let first = points.first, let last = points.last else { return nil }
+            guard let first = points.first, let last = points.last,
+                  hz >= first.hz, hz <= last.hz else { return nil }
             if hz <= first.hz { return first.db }
             if hz >= last.hz { return last.db }
             var lo = 0, hi = points.count - 1
@@ -47,6 +48,13 @@ struct ResponseCurve: View {
         }
     }
 
+    struct EditPoint: Identifiable {
+        let id: Int
+        var frequency: Double
+        var gainDB: Double
+        var enabled: Bool
+    }
+
     var traces: [Trace]
     var height: CGFloat = 190
     /// Shades ±this many dB around the zero line, for reading error plots.
@@ -54,13 +62,22 @@ struct ResponseCurve: View {
     /// Labels of traces the viewer has switched off.
     @Binding var hidden: Set<String>
 
+    var editPoints: [EditPoint] = []
+    var selectedPoint: Int? = nil
+    var fixedRange: ClosedRange<Double>? = nil
+    var showsReadout = true
+    var onSelectPoint: ((Int) -> Void)? = nil
+    var onChangeGain: ((Int, Double) -> Void)? = nil
+    var referenceLineDB: Double? = nil
+    @State private var draggedPoint: Int?
+    @State private var dragStartGain = 0.0
     @State private var hoverHz: Double?
 
     private static let minHz = 20.0
     private static let maxHz = 20_000.0
     private static let gridHz: [Double] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10_000, 20_000]
     /// Fixed so the panel cannot stretch across the plot.
-    private static let readoutWidth: CGFloat = 164
+    private static let readoutWidth: CGFloat = 240
     static let grid: [Double] = (0...220).map {
         minHz * pow(maxHz / minHz, Double($0) / 220)
     }
@@ -68,6 +85,7 @@ struct ResponseCurve: View {
     private var visible: [Trace] { traces.filter { !hidden.contains($0.label) } }
 
     private var range: ClosedRange<Double> {
+        if let fixedRange { return fixedRange }
         var lo = -6.0, hi = 6.0
         for t in visible {
             for p in t.points where p.db.isFinite { lo = min(lo, p.db); hi = max(hi, p.db) }
@@ -105,16 +123,16 @@ struct ResponseCurve: View {
                             .frame(height: max(0, bottom - top))
                             .offset(y: top)
                     }
-                    ForEach(Array(stride(from: r.lowerBound, through: r.upperBound, by: step)), id: \.self) { db in
+                    ForEach(Array(stride(from: ceil(r.lowerBound / step) * step, through: r.upperBound, by: step)), id: \.self) { db in
                         let yy = y(db, h, r)
                         Path { p in
                             p.move(to: CGPoint(x: 0, y: yy)); p.addLine(to: CGPoint(x: w, y: yy))
                         }
                         .stroke(abs(db) < 1e-9 ? CZ.Color.mutedGray : CZ.Color.lightestGray,
                                 lineWidth: abs(db) < 1e-9 ? 1 : 0.5)
-                        if abs(db) > 1e-9 {
+                        if db.isFinite {
                             Text(String(format: "%+.0f", db))
-                                .font(CZ.Typography.mono(8))
+                                .font(CZ.Typography.mono(10))
                                 .foregroundStyle(CZ.Color.lightGray)
                                 .offset(x: 2, y: yy - 9)
                         }
@@ -140,6 +158,44 @@ struct ResponseCurve: View {
                                                    dash: trace.dashed ? [4, 3] : []))
                     }
 
+                    if let reference = referenceLineDB {
+                        Path { path in
+                            path.move(to: CGPoint(x: 0, y: y(reference, h, r)))
+                            path.addLine(to: CGPoint(x: w, y: y(reference, h, r)))
+                        }
+                        .stroke(CZ.Color.mediumGray, style: StrokeStyle(lineWidth: 1.5, dash: [7, 4]))
+                        .allowsHitTesting(false)
+                        Text(String(format: "%.0f dB reference", reference))
+                            .font(CZ.Typography.mono(11))
+                            .foregroundStyle(CZ.Color.mediumGray)
+                            .offset(x: max(4, w - 125), y: y(reference, h, r) + 4)
+                            .allowsHitTesting(false)
+                    }
+                    ForEach(editPoints) { point in
+                        Text("\(point.id + 1)")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 28, height: 28)
+                            .background(point.enabled ? CZ.Color.blue : CZ.Color.mediumGray)
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(selectedPoint == point.id ? CZ.Color.orange : Color.white, lineWidth: 3))
+                            .position(x: x(point.frequency, w), y: y(point.gainDB, h, r))
+                            .zIndex(selectedPoint == point.id ? 2 : 1)
+                            .onTapGesture { onSelectPoint?(point.id) }
+                            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("responsePlot"))
+                                .onChanged { value in
+                                    onSelectPoint?(point.id)
+                                    if draggedPoint != point.id {
+                                        draggedPoint = point.id
+                                        dragStartGain = point.gainDB
+                                    }
+                                    let gain = dragStartGain - Double(value.translation.height / max(h, 1)) * span
+                                    onChangeGain?(point.id, gain)
+                                }
+                                .onEnded { _ in draggedPoint = nil })
+                            .help("Band \(point.id + 1): drag vertically to change gain; frequency stays fixed")
+                    }
+
                     // Crosshair and per-curve dots at the cursor frequency.
                     if let hz = hoverHz {
                         let xx = x(hz, w)
@@ -147,16 +203,19 @@ struct ResponseCurve: View {
                             p.move(to: CGPoint(x: xx, y: 0)); p.addLine(to: CGPoint(x: xx, y: h))
                         }
                         .stroke(CZ.Color.mediumGray, style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                        .allowsHitTesting(false)
                         ForEach(visible) { trace in
                             if let v = trace.value(at: hz) {
                                 Circle()
                                     .fill(trace.color)
                                     .frame(width: 5, height: 5)
                                     .position(x: xx, y: y(v, h, r))
+                                    .allowsHitTesting(false)
                             }
                         }
                     }
                 }
+                .coordinateSpace(name: "responsePlot")
                 .contentShape(Rectangle())
                 .onContinuousHover { phase in
                     switch phase {
@@ -164,13 +223,13 @@ struct ResponseCurve: View {
                     case .ended: hoverHz = nil
                     }
                 }
-                .overlay(alignment: .topLeading) {
-                    if let hz = hoverHz {
-                        // Sit on whichever side the cursor is not, so the panel
-                        // never covers the part of the curve being read.
+                .overlay(alignment: .topTrailing) {
+                    if showsReadout, let hz = hoverHz {
+                        // Keep the table anchored while the cursor crosses the plot.
                         readout(hz)
-                            .offset(x: x(hz, w) < w / 2 ? max(8, w - Self.readoutWidth - 8) : 8,
-                                    y: 6)
+                            .padding(.trailing, 8)
+                            .padding(.top, 6)
+                            .allowsHitTesting(false)
                     }
                 }
             }
@@ -181,16 +240,28 @@ struct ResponseCurve: View {
                 .strokeBorder(CZ.Color.ghostGray, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: CZ.Radius.medium))
 
+            GeometryReader { geo in
+                ForEach(Self.gridHz, id: \.self) { f in
+                    Text(f >= 1000 ? "\(Int(f / 1000))k" : "\(Int(f))")
+                        .font(CZ.Typography.mono(10))
+                        .foregroundStyle(CZ.Color.mediumGray)
+                        .position(x: min(max(x(f, geo.size.width), 10), geo.size.width - 14), y: 6)
+                }
+            }
+            .frame(height: 14)
+            Text("Frequency (Hz)")
+                .font(CZ.Typography.mono(10))
+                .foregroundStyle(CZ.Color.mediumGray)
+                .frame(maxWidth: .infinity)
             legend
         }
     }
 
-    /// Values at the cursor. Deliberately small and opaque: it floats over the
-    /// curves, so it has to stay out of the way and still be readable.
+    /// Values at the cursor, with readable type and a fixed corner anchor.
     private func readout(_ hz: Double) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(hz >= 1000 ? String(format: "%.2f kHz", hz / 1000) : String(format: "%.0f Hz", hz))
-                .font(CZ.Typography.mono(10))
+                .font(CZ.Typography.mono(13))
                 .foregroundStyle(CZ.Color.darkBlue)
                 .padding(.bottom, 1)
             ForEach(visible) { t in
@@ -200,21 +271,21 @@ struct ResponseCurve: View {
                             .fill(t.color)
                             .frame(width: 8, height: 2.5)
                         Text(t.label)
-                            .font(CZ.Typography.mono(9))
+                            .font(CZ.Typography.mono(12))
                             .foregroundStyle(CZ.Color.mediumGray)
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text(String(format: "%+.1f", v))
-                            .font(CZ.Typography.mono(9))
+                            .font(CZ.Typography.mono(12))
                             .foregroundStyle(CZ.Color.darkBlue)
-                            .frame(width: 34, alignment: .trailing)
+                            .frame(width: 48, alignment: .trailing)
                     }
                 }
             }
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .frame(width: Self.readoutWidth, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: CZ.Radius.tiny)
@@ -248,14 +319,7 @@ struct ResponseCurve: View {
                 .help(off ? "Show \(t.label)" : "Hide \(t.label)")
             }
             Spacer()
-            HStack(spacing: CZ.Spacing.sm) {
-                ForEach([20.0, 100.0, 1000.0, 10_000.0], id: \.self) { f in
-                    Text(f >= 1000 ? "\(Int(f / 1000))k" : "\(Int(f))")
-                        .font(CZ.Typography.mono(8))
-                        .foregroundStyle(CZ.Color.lightGray)
-                }
-                Text("Hz").font(CZ.Typography.mono(8)).foregroundStyle(CZ.Color.lightGray)
-            }
+
         }
     }
 }

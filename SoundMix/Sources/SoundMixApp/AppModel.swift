@@ -16,6 +16,13 @@ final class AppModel: ObservableObject {
     @Published var recipeName: String = MatrixRecipe.reference.name
     @Published var customRecipe: MatrixRecipe = .reference
     @Published var headroomMode: HeadroomMode = .powerPreserving
+    /// Fold through a head-related filter bank instead of the amplitude matrix.
+    @Published var foldIsBinaural = false
+    @Published var binauralName: String = BinauralProfile.virtualSpeakers.name
+    @Published var headRadiusText: String = "8.75"
+    @Published var bassCrossoverText: String = "150"
+    @Published var rearDampingText: String = "-3.5"
+    @Published var elevationCueText: String = "-8"
     @Published var manualGainText: String = "0"
     @Published var swapOutputs = false
 
@@ -58,7 +65,7 @@ final class AppModel: ObservableObject {
     enum PlotMode: String, CaseIterable, Codable, Identifiable {
         case absolute, errorVsTarget
         var id: String { rawValue }
-        var label: String { self == .absolute ? "Absolute" : "Error vs target" }
+        var label: String { self == .absolute ? "Normalized response" : "Error vs target" }
         var explanation: String {
             self == .absolute
                 ? "Measured, target and result on shared axes, levelled over 200 Hz – 2 kHz."
@@ -136,6 +143,31 @@ final class AppModel: ObservableObject {
         return r
     }
 
+    var availableBinaurals: [BinauralProfile] { BinauralProfile.builtIns }
+
+    /// The binaural profile with the live editor values folded in, the same way
+    /// `workingRecipe` folds in the LFE edits.
+    var workingBinaural: BinauralProfile {
+        var p = availableBinaurals.first { $0.name == binauralName } ?? .virtualSpeakers
+        p.headRadiusCM = Double(headRadiusText) ?? p.headRadiusCM
+        p.bassCrossoverHz = Double(bassCrossoverText) ?? p.bassCrossoverHz
+        p.rearDampingDB = Double(rearDampingText) ?? p.rearDampingDB
+        p.elevationCueDB = Double(elevationCueText) ?? p.elevationCueDB
+        p.lfe = LFESettings(mode: lfeMode,
+                            gainDB: Double(lfeGainText) ?? 0,
+                            cutoffHz: Double(lfeCutoffText) ?? 120,
+                            filterOrder: lfeOrder)
+        return p
+    }
+
+    /// The bank the interface describes: built for the running device rate so
+    /// the inter-aural delays shown are the ones actually being rendered.
+    var displayedBank: HRIRBank? {
+        guard foldIsBinaural else { return nil }
+        return HRIRBank.cached(profile: workingBinaural,
+                               sampleRate: state.isRunning ? engine.currentSampleRate : 48_000)
+    }
+
     var globalProfile: PEQProfile {
         guard !eqBypassed, !globalPEQText.isEmpty else { return .flat }
         return APOParser.parse(globalPEQText).firstProfile
@@ -164,7 +196,8 @@ final class AppModel: ObservableObject {
                 ceilingDB: Double(limiterCeilingText) ?? -1,
                 lookaheadMS: 2,
                 releaseMS: Double(limiterReleaseText) ?? 80,
-                enabled: limiterEnabled))
+                enabled: limiterEnabled),
+            binaural: foldIsBinaural ? workingBinaural : nil)
     }
 
     var limiterStatus: String {
@@ -176,7 +209,7 @@ final class AppModel: ObservableObject {
 
     var gainBreakdown: String {
         let cfg = configuration
-        return String(format: "Matrix trim %+.1f dB · manual %+.1f dB · global EQ preamp %+.1f dB · speaker preamps L %+.1f / R %+.1f dB. EQ filters add their own frequency-dependent boosts and cuts.",
+        return String(format: "Fold trim %+.1f dB · manual %+.1f dB · global EQ preamp %+.1f dB · speaker preamps L %+.1f / R %+.1f dB. EQ filters add their own frequency-dependent boosts and cuts.",
                       cfg.automaticTrimDB, cfg.manualGainDB, cfg.globalPEQ.preampDB,
                       cfg.speakerPEQLeft.preampDB, cfg.speakerPEQRight.preampDB)
     }
@@ -307,7 +340,31 @@ final class AppModel: ObservableObject {
         engine.apply(configuration)
         append(String(format: "Applied · trim %+.1f dB · worst case %+.1f dB",
                       configuration.totalTrimDB,
-                      configuration.effectiveMatrix.worstCasePeakGainDB))
+                      configuration.foldPeakGainDB))
+    }
+
+    /// Commit a graphical draft without applying unrelated device or matrix edits.
+    func applyPEQDraft(_ draft: PEQEditDraft) -> Bool {
+        guard draft.warnings.isEmpty,
+              draft.originalGlobal == globalPEQText, draft.originalSpeaker == speakerPEQText,
+              draft.swapsOutputs == swapOutputs else { return false }
+        globalPEQText = draft.globalText
+        speakerPEQText = draft.speakerText
+        reloadPEQWarnings()
+        markProfileDirty()
+        if state.isRunning {
+            var config = engine.processor.configuration
+            config.globalPEQ = globalProfile
+            let document = APOParser.parse(speakerPEQText)
+            let left = eqBypassed ? PEQProfile.flat : document.profile(forChannel: 0)
+            let right = eqBypassed ? PEQProfile.flat : document.profile(forChannel: 1)
+            config.speakerPEQLeft = config.swapOutputs ? right : left
+            config.speakerPEQRight = config.swapOutputs ? left : right
+            engine.apply(config)
+        }
+        save()
+        append("Applied graphical PEQ edits.")
+        return true
     }
 
     func syncRecipeEditors() {
@@ -316,6 +373,24 @@ final class AppModel: ObservableObject {
         lfeCutoffText = String(format: "%.0f", r.lfeCutoffHz)
         lfeOrder = r.lfeFilterOrder
         lfeGainText = String(format: "%.2f", r.lfeGainDB)
+    }
+
+    func syncBinauralEditors() {
+        let p = availableBinaurals.first { $0.name == binauralName } ?? .virtualSpeakers
+        headRadiusText = String(format: "%.2f", p.headRadiusCM)
+        bassCrossoverText = String(format: "%.0f", p.bassCrossoverHz)
+        rearDampingText = String(format: "%.1f", p.rearDampingDB)
+        elevationCueText = String(format: "%.1f", p.elevationCueDB)
+        lfeMode = p.lfe.mode
+        lfeCutoffText = String(format: "%.0f", p.lfe.cutoffHz)
+        lfeOrder = p.lfe.filterOrder
+        lfeGainText = String(format: "%.2f", p.lfe.gainDB)
+    }
+
+    /// Switching fold mode reloads the LFE editors from whichever fold is now
+    /// in charge of them, so the LFE card always shows what is being rendered.
+    func syncFoldEditors() {
+        if foldIsBinaural { syncBinauralEditors() } else { syncRecipeEditors() }
     }
 
     func refreshDevices() {
@@ -620,9 +695,9 @@ final class AppModel: ObservableObject {
 
     /// Worst deviation of the corrected result from the target (or from its own
     /// mean when no target is loaded), across both ears.
-    func resultDeviationDB() -> Double {
+    func resultDeviationDB() -> Double? {
         let rate = state.isRunning ? engine.currentSampleRate : 48_000
-        var worst = 0.0
+        var worst: Double?
         for side in EQProfile.Side.allCases {
             guard let m = measurement(side) else { continue }
             let corrected = m.corrected(by: combinedEQCascade(side), sampleRate: rate)
@@ -630,12 +705,13 @@ final class AppModel: ObservableObject {
             if let t = target {
                 let curve = FrequencyResponse(name: "", points: corrected).normalized()
                 let ref = t.normalized()
-                for p in curve.points {
-                    worst = max(worst, abs(p.db - ref.magnitudeDB(at: p.hz)))
+                for p in curve.difference(from: ref) {
+                    worst = max(worst ?? 0, abs(p.db))
                 }
             } else {
-                let mean = corrected.reduce(0) { $0 + $1.db } / Double(corrected.count)
-                worst = max(worst, corrected.reduce(0.0) { max($0, abs($1.db - mean)) })
+                let sampled = FrequencyResponse(name: "", points: corrected).sampled()
+                let mean = sampled.reduce(0) { $0 + $1.db } / Double(sampled.count)
+                worst = max(worst ?? 0, sampled.reduce(0.0) { max($0, abs($1.db - mean)) })
             }
         }
         return worst
@@ -756,6 +832,13 @@ final class AppModel: ObservableObject {
         var selectedProfileID: UUID?
         var eqBypassed: Bool?
         var speakerSectionCollapsed: Bool?
+        // Added with the binaural fold; absent in settings written before it.
+        var foldIsBinaural: Bool?
+        var binauralName: String?
+        var headRadiusText: String?
+        var bassCrossoverText: String?
+        var rearDampingText: String?
+        var elevationCueText: String?
     }
 
     private static var settingsURL: URL {
@@ -775,7 +858,10 @@ final class AppModel: ObservableObject {
                        globalPEQText: globalPEQText, speakerPEQText: speakerPEQText,
                        framesPerBuffer: framesPerBuffer, safetyBufferText: safetyBufferText,
                        selectedProfileID: selectedProfileID, eqBypassed: eqBypassed,
-                       speakerSectionCollapsed: speakerSectionCollapsed)
+                       speakerSectionCollapsed: speakerSectionCollapsed,
+                       foldIsBinaural: foldIsBinaural, binauralName: binauralName,
+                       headRadiusText: headRadiusText, bassCrossoverText: bassCrossoverText,
+                       rearDampingText: rearDampingText, elevationCueText: elevationCueText)
         if let data = try? JSONEncoder().encode(s) { try? data.write(to: Self.settingsURL) }
     }
 
@@ -805,5 +891,13 @@ final class AppModel: ObservableObject {
         selectedProfileID = s.selectedProfileID
         eqBypassed = s.eqBypassed ?? false
         speakerSectionCollapsed = s.speakerSectionCollapsed ?? false
+        // A settings file written before the binaural fold existed restores to
+        // the amplitude matrix, exactly as it was saved.
+        foldIsBinaural = s.foldIsBinaural ?? false
+        binauralName = s.binauralName ?? BinauralProfile.virtualSpeakers.name
+        headRadiusText = s.headRadiusText ?? headRadiusText
+        bassCrossoverText = s.bassCrossoverText ?? bassCrossoverText
+        rearDampingText = s.rearDampingText ?? rearDampingText
+        elevationCueText = s.elevationCueText ?? elevationCueText
     }
 }

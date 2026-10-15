@@ -23,6 +23,7 @@ let sr = 48_000.0
 
 /// Write a multichannel WAV where channel i holds a sine at a known amplitude.
 func writeSource(channels: Int, seconds: Double, amplitude: (Int) -> Double,
+                 frequency: ((Int) -> Double)? = nil,
                  name: String) throws -> URL {
     let url = tmp.appendingPathComponent(name)
     let settings: [String: Any] = [
@@ -46,7 +47,7 @@ func writeSource(channels: Int, seconds: Double, amplitude: (Int) -> Double,
         for c in 0..<channels {
             let plane = buf.floatChannelData![c]
             let amp = amplitude(c)
-            let freq = 110.0 * Double(c + 2)
+            let freq = frequency?(c) ?? (110.0 * Double(c + 2))
             for f in 0..<count {
                 plane[f] = Float(amp * sin(2 * .pi * freq * Double(n + f) / sr))
             }
@@ -125,6 +126,66 @@ do {
     let ac = try analyse(outC)
     near(db(ac.peakL) - db(0.5), -3.0103, 0.05, "centre folds to L at −3.01 dB")
     near(db(ac.peakR) - db(0.5), -3.0103, 0.05, "centre folds to R at −3.01 dB")
+}
+
+section("Binaural rendering through the file path")
+do {
+    var profile = BinauralProfile.virtualSpeakers
+    profile.lfe = LFESettings(mode: .off)
+    var cfg = ProcessorConfiguration(layout: .nativeBed, recipe: .reference,
+                                     headroomMode: .none, manualGainDB: 0)
+    cfg.binaural = profile
+    cfg.limiter = .init(enabled: false)
+
+    // Every mapped channel has to arrive from the side it sits on. 4 kHz is
+    // well above the head-shadow corner, so the level difference is the cue.
+    let cases: [(BedChannel, String)] = [
+        (.l, "front left"), (.r, "front right"), (.ls, "side surround left"),
+        (.rs, "side surround right"), (.ltf, "top front left"), (.rtf, "top front right"),
+        (.lrs, "rear surround left"), (.c, "centre"),
+    ]
+    for (ch, label) in cases {
+        let src = try! writeSource(channels: 16, seconds: 0.25,
+                                   amplitude: { $0 == ch.rawValue ? 0.5 : 0 },
+                                   frequency: { _ in 4000 },
+                                   name: "bin-\(ch.shortName).wav")
+        let out = tmp.appendingPathComponent("bin-\(ch.shortName)-out.wav")
+        _ = try OfflineRenderer().render(input: src, output: out, configuration: cfg, bitDepth: 32)
+        let a = try analyse(out)
+        let balance = db(a.peakL) - db(a.peakR)
+        switch ch.side {
+        case .left:  check(balance > 4, "\(label) arrives on the left", String(format: "%+.1f dB", balance))
+        case .right: check(balance < -4, "\(label) arrives on the right", String(format: "%+.1f dB", balance))
+        case .none:  check(abs(balance) < 0.2, "\(label) arrives centred", String(format: "%+.1f dB", balance))
+        }
+    }
+
+    // The same file rendered twice must come out byte for byte identical.
+    let src = try! writeSource(channels: 16, seconds: 0.5, amplitude: { _ in 0.2 },
+                               name: "bin-all.wav")
+    let first = tmp.appendingPathComponent("bin-all-1.wav")
+    let second = tmp.appendingPathComponent("bin-all-2.wav")
+    let r1 = try OfflineRenderer().render(input: src, output: first, configuration: cfg, bitDepth: 32)
+    _ = try OfflineRenderer().render(input: src, output: second, configuration: cfg, bitDepth: 32)
+    let d1 = try Data(contentsOf: first), d2 = try Data(contentsOf: second)
+    check(d1 == d2, "the binaural render is deterministic", "\(d1.count) vs \(d2.count) bytes")
+    print("       → binaural rendered \(String(format: "%.2f", r1.duration))s in \(String(format: "%.3f", r1.renderTime))s (\(String(format: "%.0f", r1.speedFactor))× real time)")
+
+    // Untrimmed, fifteen correlated channels summing through the bank overshoot
+    // full scale exactly as they do through a unity matrix — which is what the
+    // automatic trim is for.
+    check(r1.clippedSamples > 0, "an untrimmed fold overshoots on correlated content",
+          "\(r1.clippedSamples)")
+    var safe = cfg
+    safe.headroomMode = .powerPreserving
+    let outSafe = tmp.appendingPathComponent("bin-trimmed.wav")
+    let rSafe = try OfflineRenderer().render(input: src, output: outSafe, configuration: safe, bitDepth: 32)
+    let trimmed = try analyse(outSafe)
+    let raw = try analyse(first)
+    near(db(trimmed.peakL) - db(raw.peakL), safe.automaticTrimDB, 0.05,
+         "the automatic trim reaches the rendered file")
+    check(rSafe.clippedSamples == 0, "and the trimmed render does not clip",
+          "\(rSafe.clippedSamples)")
 }
 
 section("Headroom and the limiter on a hostile file")
