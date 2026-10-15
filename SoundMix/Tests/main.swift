@@ -1322,6 +1322,68 @@ do {
     }
 }
 
+section("Non-finite input containment")
+do {
+    // A wedged capture device may deliver NaN or infinities. Every stage must
+    // either mute them or recover, never latch them into state.
+    var l = Double.nan, r = Double.infinity
+    TruePeakLimiter().process(&l, &r)
+    check(l.isFinite && r.isFinite, "limiter mutes non-finite frames instead of passing them")
+
+    var meter = LevelMeter()
+    meter.configure(sampleRate: sr)
+    meter.accumulate(.nan)
+    meter.accumulate(0.5)
+    check(meter.rmsDB.isFinite, "meter RMS recovers after a NaN sample")
+
+    let proc = SoundMixProcessor()
+    var cfg = ProcessorConfiguration()
+    cfg.globalPEQ = PEQProfile(preampDB: 0, filters: [
+        PEQFilter(frequency: 1000, gainDB: 6, q: 1)
+    ])
+    proc.applyNow(cfg)
+    proc.prepare(sampleRate: sr)
+    proc.applyNow(cfg)
+    var input = [Float](repeating: 0, count: 64 * 16)
+    for i in 0..<64 { input[i * 16] = .nan; input[i * 16 + 1] = .infinity }
+    var output = [Float](repeating: 0, count: 64 * 2)
+    proc.noteUnderrun()
+    proc.noteUnderrun()
+    proc.process(input: &input, inputChannels: 16, frames: 64, output: &output)
+    check(output.allSatisfy { $0.isFinite }, "processor mutes non-finite input at ingestion")
+    let snap = proc.snapshot()
+    // Silence meters read as the -.infinity floor by design; what must never
+    // happen is NaN latching into the one-pole state.
+    check(!snap.outputRMSDB.0.isNaN && !snap.outputRMSDB.1.isNaN,
+          "snapshot meters never latch NaN")
+    check(snap.underruns == 2, "underrun counts survive a snapshot round trip")
+}
+
+section("Locked control APIs")
+do {
+    // applyNow / prepare / reset swap whole states under the lock; repeated
+    // calls and interleaved reads must stay coherent.
+    let proc = SoundMixProcessor()
+    var cfg = ProcessorConfiguration()
+    cfg.globalPEQ = PEQProfile(preampDB: 0, filters: [
+        PEQFilter(frequency: 60, gainDB: 4, q: 0.9)
+    ])
+    proc.applyNow(cfg)
+    proc.prepare(sampleRate: 96_000)
+    check(proc.configuration == cfg, "applyNow followed by prepare keeps the configuration")
+    proc.reset()
+    check(proc.configuration == cfg, "reset keeps the configuration")
+
+    // A live-style queued apply still lands on the next block.
+    var edited = cfg
+    edited.globalPEQ.filters[0].gainDB = -4
+    proc.apply(edited)
+    var input = [Float](repeating: 0.1, count: 32 * 16)
+    var output = [Float](repeating: 0, count: 32 * 2)
+    proc.process(input: &input, inputChannels: 16, frames: 32, output: &output)
+    check(proc.configuration == edited, "queued apply is adopted by the next processed block")
+}
+
 print("\n\(checks - failures)/\(checks) checks passed")
 if failures > 0 { print("\(failures) FAILED"); exit(1) }
 print("All DSP checks passed.")

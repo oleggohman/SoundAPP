@@ -21,8 +21,12 @@ public final class FloatRingBuffer: @unchecked Sendable {
     private var fraction = 0.0
     public private(set) var readRatio = 1.0
 
-    public private(set) var overruns = 0
-    public private(set) var underruns = 0
+    /// Diagnostics counters, written on the producer/consumer threads and read
+    /// for telemetry, so they accumulate atomically.
+    private let overrunCount = Atomic<Int>(0)
+    private let underrunCount = Atomic<Int>(0)
+    public var overruns: Int { overrunCount.load(ordering: .acquiring) }
+    public var underruns: Int { underrunCount.load(ordering: .acquiring) }
 
     public init(frames: Int, channels: Int, targetFrames: Int = 0) {
         self.capacity = max(frames, 2)
@@ -50,19 +54,22 @@ public final class FloatRingBuffer: @unchecked Sendable {
         return capacity - (w >= r ? w - r : capacity - r + w) - 1
     }
 
+    /// Only for a stopped stream (both sides quiescent): the buffer contents
+    /// and the interpolator's fractional position are reset without any
+    /// synchronization against a live producer or consumer.
     public func reset() {
         writeIndex.store(0, ordering: .releasing)
         readIndex.store(0, ordering: .releasing)
         storage.update(repeating: 0, count: capacity * channels)
         primed = false; fraction = 0; readRatio = 1
-        overruns = 0
-        underruns = 0
+        overrunCount.store(0, ordering: .relaxed)
+        underrunCount.store(0, ordering: .relaxed)
     }
 
     /// Producer side. Drops the block and counts an overrun when there is no room.
     @discardableResult
     public func write(_ source: UnsafePointer<Float>, frames: Int) -> Bool {
-        guard frames <= framesFree else { overruns += 1; return false }
+        guard frames <= framesFree else { overrunCount.wrappingAdd(1, ordering: .relaxed); return false }
         var w = writeIndex.load(ordering: .relaxed)
         var remaining = frames
         var offset = 0
@@ -84,7 +91,7 @@ public final class FloatRingBuffer: @unchecked Sendable {
         let available = framesAvailable
         let toRead = min(frames, available)
         if toRead < frames {
-            underruns += 1
+            underrunCount.wrappingAdd(1, ordering: .relaxed)
             destination.advanced(by: toRead * channels)
                 .update(repeating: 0, count: (frames - toRead) * channels)
         }
@@ -122,9 +129,16 @@ public final class FloatRingBuffer: @unchecked Sendable {
         readRatio += (desired - readRatio) * 0.01
         let required = Int(ceil(fraction + Double(frames) * readRatio)) + Self.taps
         guard available >= required else {
-            underruns += 1
+            underrunCount.wrappingAdd(1, ordering: .relaxed)
             primed = false
-            destination.update(repeating: 0, count: frames * channels)
+            // Play whatever did arrive and zero-fill the tail, rather than
+            // silencing the whole block. A plain integer read of `toRead`
+            // frames is safe: the interpolator's history window is only
+            // needed once it resumes, after re-priming.
+            let toRead = min(frames, available)
+            if toRead > 0 { _ = read(into: destination, frames: toRead) }
+            destination.advanced(by: toRead * channels)
+                .update(repeating: 0, count: (frames - toRead) * channels)
             return false
         }
         var r = readIndex.load(ordering: .relaxed)

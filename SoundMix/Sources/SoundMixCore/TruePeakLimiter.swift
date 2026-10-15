@@ -106,7 +106,11 @@ public final class TruePeakLimiter {
     public func process(_ left: inout Double, _ right: inout Double) {
         guard settings.enabled else { return }
 
-        let inL = left, inR = right
+        // A non-finite sample (a misbehaving capture device) must stop here:
+        // NaN compares false against everything, which would otherwise leave
+        // the gain envelope untouched and pass NaN to the output.
+        let inL = left.isFinite ? left : 0
+        let inR = right.isFinite ? right : 0
 
         // True-peak estimate of the incoming frame, using the louder channel.
         historyL[historyIndex] = inL
@@ -143,8 +147,10 @@ public final class TruePeakLimiter {
     @inline(__always)
     private func clampToCeiling(_ v: Double) -> Double {
         // The envelope already holds the signal down; this only guards against
-        // the residual error of the true-peak estimate.
-        min(max(v, -ceilingLinear), ceilingLinear)
+        // the residual error of the true-peak estimate. A non-finite value is
+        // muted rather than clamped: min/max propagate NaN, they do not trap it.
+        guard v.isFinite else { return 0 }
+        return min(max(v, -ceilingLinear), ceilingLinear)
     }
 
     /// Peak magnitude of the 4× oversampled signal around the newest sample.

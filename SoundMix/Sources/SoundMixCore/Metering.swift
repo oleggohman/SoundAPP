@@ -21,6 +21,9 @@ public struct LevelMeter: Sendable {
 
     @inline(__always)
     public mutating func accumulate(_ sample: Double) {
+        // A non-finite sample must not enter the one-pole: meanSquare would
+        // latch NaN permanently and the RMS readout would never recover.
+        guard sample.isFinite else { return }
         let a = abs(sample)
         if a > peak { peak = a } else { peak *= decay }
         meanSquare = a * a + (meanSquare - a * a) * rmsCoefficient

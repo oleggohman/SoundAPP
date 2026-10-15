@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Synchronization
 
 /// Everything that defines how a bed is folded to stereo.
 public struct ProcessorConfiguration: Equatable, Sendable {
@@ -170,7 +171,8 @@ private final class ProcessorRenderState: @unchecked Sendable {
     private var bedMeters = [LevelMeter](repeating: LevelMeter(), count: BedChannel.count)
     private var meterLeft = LevelMeter(), meterRight = LevelMeter()
     private var appliedTrimDB: Double = 0
-    private var underruns = 0
+    /// Read by the UI thread without a lock, so it accumulates atomically.
+    private let underruns = Atomic<Int>(0)
 
     // Shared state -----------------------------------------------------------
     // os_unfair_lock must live at a fixed address. Taking `&someStoredProperty`
@@ -346,7 +348,7 @@ private final class ProcessorRenderState: @unchecked Sendable {
         }
         for i in bedMeters.indices { bedMeters[i] = previous.bedMeters[i] }
         meterLeft = previous.meterLeft; meterRight = previous.meterRight
-        underruns = previous.underruns
+        underruns.store(previous.underruns.load(ordering: .relaxed), ordering: .relaxed)
     }
 
     public func reset() {
@@ -360,10 +362,10 @@ private final class ProcessorRenderState: @unchecked Sendable {
         dryDelayIndex = 0
         for i in bedMeters.indices { bedMeters[i].reset() }
         meterLeft.reset(); meterRight.reset()
-        underruns = 0
+        underruns.store(0, ordering: .relaxed)
     }
 
-    public func noteUnderrun() { underruns += 1 }
+    public func noteUnderrun() { underruns.wrappingAdd(1, ordering: .relaxed) }
 
     /// Total added latency of the processing chain, in milliseconds.
     public var latencyMS: Double {
@@ -439,7 +441,10 @@ private final class ProcessorRenderState: @unchecked Sendable {
 
             for c in 0..<BedChannel.count {
                 let slot = inputMap[c]
-                let v = (slot >= 0 && slot < inputChannels) ? Double(input[base + slot]) : 0
+                // Non-finite input (a wedged capture device) is muted, not
+                // propagated: NaN would otherwise ride every stage downstream.
+                let raw = slot >= 0 && slot < inputChannels ? Double(input[base + slot]) : 0
+                let v = raw.isFinite ? raw : 0
                 bed[c] = v
                 bedMeters[c].accumulate(v)
             }
@@ -476,7 +481,10 @@ private final class ProcessorRenderState: @unchecked Sendable {
                 var bass = 0.0
                 for c in 0..<BedChannel.count {
                     let slot = inputMap[c]
-                    let v = (slot >= 0 && slot < inputChannels) ? Double(input[base + slot]) : 0
+                    // Non-finite input is muted here, at the single point both
+                    // folds read the device, so no downstream stage sees it.
+                    let raw = slot >= 0 && slot < inputChannels ? Double(input[base + slot]) : 0
+                    let v = raw.isFinite ? raw : 0
                     bed[c] = v
                     bedMeters[c].accumulate(v)
                     bedBlocks[c * cap + f] = v
@@ -542,7 +550,7 @@ private final class ProcessorRenderState: @unchecked Sendable {
             latencyMS: latencyMS,
             sampleRate: sampleRate,
             isRunning: true,
-            underruns: underruns)
+            underruns: underruns.load(ordering: .acquiring))
         snapshotStorage = snap
     }
 
@@ -587,25 +595,67 @@ public final class SoundMixProcessor: @unchecked Sendable {
     public var configuration: ProcessorConfiguration { readState().configuration }
     public var latencyMS: Double { readState().latencyMS }
 
-    // Setup/reset APIs require the stream to be stopped.
+    /// A private build of a fresh render state holding `config`, prepared for
+    /// `sampleRate`. Everything that mutates render state happens here, on the
+    /// calling (control) thread, so the audio thread only ever swaps whole
+    /// states under the lock — it never mutates a state it might be reading.
+    private func makeState(config: ProcessorConfiguration, sampleRate: Double,
+                           inheritingFrom previous: ProcessorRenderState?) -> ProcessorRenderState {
+        let next = ProcessorRenderState()
+        next.applyNow(config)
+        next.prepare(sampleRate: sampleRate)
+        if let previous { next.inheritHistory(from: previous) }
+        return next
+    }
+
+    /// Replace the state now, synchronously, carrying filter history across so
+    /// the rebuild is equivalent to the in-place rebuild this used to be. For
+    /// offline rendering and bring-up (before the audio units exist).
+    public func applyNow(_ config: ProcessorConfiguration) {
+        let previous = readState()
+        let next = makeState(config: config, sampleRate: sampleRate, inheritingFrom: previous)
+        os_unfair_lock_lock(lock)
+        retired = current
+        current = next
+        pending = nil
+        os_unfair_lock_unlock(lock)
+    }
+
+    /// Re-prepare for a new sample rate. Rebuilds the current configuration
+    /// (coefficients are rate-dependent) on a fresh state, keeping history,
+    /// swapped under the lock.
     public func prepare(sampleRate: Double) {
         self.sampleRate = sampleRate
-        current.prepare(sampleRate: sampleRate)
+        let previous = readState()
+        let next = makeState(config: previous.configuration, sampleRate: sampleRate,
+                             inheritingFrom: previous)
+        os_unfair_lock_lock(lock)
+        retired = current
+        current = next
+        pending = nil
+        os_unfair_lock_unlock(lock)
     }
-    public func applyNow(_ config: ProcessorConfiguration) {
-        pending = nil; retired = nil
-        current.applyNow(config)
+
+    /// Reset all filter and meter history. Rebuilds a clean state that keeps
+    /// the current configuration, swapped under the lock.
+    public func reset() {
+        let previous = readState()
+        let next = makeState(config: previous.configuration, sampleRate: sampleRate,
+                             inheritingFrom: nil)
+        os_unfair_lock_lock(lock)
+        retired = current
+        current = next
+        pending = nil
+        os_unfair_lock_unlock(lock)
     }
-    public func reset() { current.reset() }
     public func markStopped() { readState().markStopped() }
     public func snapshot() -> RenderSnapshot { readState().snapshot() }
 
     /// Queue a configuration change. Safe to call from any thread; the audio
-    /// thread picks it up at the start of its next block.
+    /// thread picks it up at the start of its next block, inheriting history
+    /// from the state it replaces so live edits do not click.
     public func apply(_ config: ProcessorConfiguration) {
-        let next = ProcessorRenderState()
-        next.applyNow(config)
-        next.prepare(sampleRate: sampleRate)
+        let next = makeState(config: config, sampleRate: sampleRate, inheritingFrom: nil)
         os_unfair_lock_lock(lock)
         retired = nil
         pending = next
