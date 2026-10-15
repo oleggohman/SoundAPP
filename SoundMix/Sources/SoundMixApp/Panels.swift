@@ -554,6 +554,8 @@ struct OutputEQPanel: View {
                         model.reloadPEQWarnings(); model.markProfileDirty()
                     }
                 HStack(spacing: CZ.Spacing.sm) {
+                    CZButton(title: "Apply & save", icon: "checkmark.circle",
+                             variant: .primary, size: .small) { model.applyAndSavePEQ() }
                     CZButton(title: "Load text file…", icon: "square.and.arrow.down",
                              variant: .secondary, size: .small) { load(into: $model.globalPEQText) }
                     CZButton(title: "Export as APO…", icon: "square.and.arrow.up",
@@ -577,6 +579,8 @@ struct OutputEQPanel: View {
                         model.reloadPEQWarnings(); model.markProfileDirty()
                     }
                 HStack(spacing: CZ.Spacing.sm) {
+                    CZButton(title: "Apply & save", icon: "checkmark.circle",
+                             variant: .primary, size: .small) { model.applyAndSavePEQ() }
                     CZButton(title: "Load text file…", icon: "square.and.arrow.down",
                              variant: .secondary, size: .small) { load(into: $model.speakerPEQText) }
                     CZButton(title: "Export as APO…", icon: "square.and.arrow.up",
@@ -702,33 +706,6 @@ private struct ProfileLibraryCard: View {
                         .font(CZ.Typography.caption)
                         .foregroundStyle(CZ.Color.lightGray)
                 }
-
-                HStack(spacing: CZ.Spacing.sm) {
-                    Text("Target")
-                        .font(CZ.Typography.mono(11))
-                        .foregroundStyle(model.target == nil ? CZ.Color.mutedGray : CZ.Color.darkBlue)
-                        .frame(width: 42, alignment: .leading)
-                    if let t = model.target {
-                        CZPill(text: t.name, tint: CZ.Color.red)
-                        Text(String(format: "%.0f Hz – %.0f kHz", t.range.low, t.range.high / 1000))
-                            .font(CZ.Typography.caption)
-                            .foregroundStyle(CZ.Color.lightGray)
-                        Spacer()
-                        CZButton(title: "Replace…", variant: .transparent, size: .small) {
-                            model.loadTarget()
-                        }
-                        CZButton(title: "Remove", variant: .transparent, size: .small) {
-                            model.clearTarget()
-                        }
-                    } else {
-                        Text("none — deviation is measured against the curve's own mean")
-                            .font(CZ.Typography.caption)
-                            .foregroundStyle(CZ.Color.lightGray)
-                        Spacer()
-                        CZButton(title: "Upload target…", icon: "target",
-                                 variant: .secondary, size: .small) { model.loadTarget() }
-                    }
-                }
             }
 
             HStack(spacing: CZ.Spacing.sm) {
@@ -742,10 +719,6 @@ private struct ProfileLibraryCard: View {
                         .font(CZ.Typography.caption).foregroundStyle(CZ.Color.lightGray)
                 }
                 Spacer()
-                CZButton(title: model.selectedProfile == nil ? "Create" : "Save",
-                         icon: "tray.and.arrow.down", variant: .primary, size: .small) {
-                    model.saveSelectedProfile()
-                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -872,6 +845,65 @@ private struct ProfileRow: View {
     }
 }
 
+/// The reference curve picker above the plot: None, the bundled reference
+/// models, and a custom file, all writing to `model.target` directly.
+private struct TargetPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    private enum Tag: Hashable {
+        case none, customFile, custom
+        case builtIn(BuiltInTarget)
+    }
+
+    private var selection: Binding<Tag> {
+        Binding(
+            get: {
+                guard let t = model.target else { return .none }
+                // Bundled CSVs are parsed with the target's display name, so a
+                // loaded built-in curve is recognised by name.
+                if let builtIn = BuiltInTarget.all.first(where: { $0.name == t.name }) {
+                    return .builtIn(builtIn)
+                }
+                return .custom
+            },
+            set: { tag in
+                switch tag {
+                case .none: model.clearTarget()
+                case .customFile: model.loadTarget()
+                case .custom: break
+                case .builtIn(let target): model.loadBuiltInTarget(target)
+                }
+            })
+    }
+
+    var body: some View {
+        HStack(spacing: CZ.Spacing.xs) {
+            Text("Target:")
+                .font(CZ.Typography.caption)
+                .foregroundStyle(CZ.Color.mediumGray)
+            Picker("Target", selection: selection) {
+                Text("None").tag(Tag.none)
+                ForEach(BuiltInTarget.all) { target in
+                    Text(target.name).tag(Tag.builtIn(target))
+                }
+                if selection.wrappedValue == .custom {
+                    Text(model.target?.name ?? "Custom").tag(Tag.custom)
+                }
+                Divider()
+                Text("Custom File…").tag(Tag.customFile)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 260)
+            if let t = model.target {
+                Text(String(format: "%.0f Hz – %.0f kHz", t.range.low, t.range.high / 1000))
+                    .font(CZ.Typography.caption)
+                    .foregroundStyle(CZ.Color.lightGray)
+            }
+        }
+    }
+}
+
 private struct ResponseCard: View {
     @EnvironmentObject var model: AppModel
 
@@ -884,21 +916,18 @@ private struct ResponseCard: View {
                    : "The measured curve, the EQ applied to it, and the result you will actually hear.") {
 
             HStack {
+                TargetPicker()
                 Spacer()
                 CZButton(title: "Expand & edit PEQ", icon: "arrow.up.left.and.arrow.down.right",
                          variant: .secondary, size: .small) {
                     PEQPlotWindow.shared.show(model: model)
                 }
             }
-            Text(model.canShowErrorView && model.plotMode == .errorVsTarget
-                 ? "Deviation from target (dB) · + above target / − below target · shaded band ±3 dB"
-                 : "Normalized response / EQ gain (dB)")
+            Text("Normalized response / EQ gain (dB)")
                 .font(CZ.Typography.caption)
                 .foregroundStyle(CZ.Color.mediumGray)
             ResponseCurve(traces: ResponsePlotTraces.make(model: model, rate: rate,
-                          global: model.globalProfile, speakers: model.speakerProfiles, mode: model.plotMode, target: model.target),
-                          toleranceBandDB: (model.canShowErrorView
-                                            && model.plotMode == .errorVsTarget) ? 3 : nil,
+                          global: model.globalProfile, speakers: model.speakerProfiles, target: model.target),
                           hidden: $model.hiddenTraces)
 
             if let error = model.measurementError {
@@ -961,12 +990,6 @@ private struct ResponseCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                if model.target != nil && model.hasMeasurement {
-                    CZSelect(label: "View", selection: $model.plotMode,
-                             options: AppModel.PlotMode.allCases.map { ($0, $0.label) },
-                             help: model.plotMode.explanation)
-                        .frame(width: 210)
-                }
                 CZToggleRow(title: "Bypass EQ", subtitle: "A/B against no correction.",
                             isOn: $model.eqBypassed)
                     .frame(width: 230)

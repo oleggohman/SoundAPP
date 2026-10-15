@@ -1289,12 +1289,18 @@ do {
     let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("Resources/Targets")
     var loaded: [BuiltInTarget: FrequencyResponse] = [:]
-    for target in BuiltInTarget.allCases {
+    check(!BuiltInTarget.all.isEmpty,
+          "the bundled target manifest lists at least one target")
+    check(BuiltInTarget.all.count == Set(BuiltInTarget.all.map(\.id)).count,
+          "the bundled target manifest has unique ids")
+    for target in BuiltInTarget.all {
         do {
             let curve = try target.load(from: directory)
             loaded[target] = curve
-            check(curve.name == target.name && curve.points.count > 400,
-                  "\(target.name) loads from the offline resource")
+            check(curve.name == target.name,
+                  "\(target.name) parses under its display name")
+            check(curve.points.count > 400,
+                  "\(target.name) has enough points to plot")
             check(curve.range.low <= 20 && curve.range.high >= 19000,
                   "\(target.name) covers the audible comparison range")
             check(curve.points.allSatisfy { $0.hz.isFinite && $0.db.isFinite && $0.hz > 0 },
@@ -1306,17 +1312,19 @@ do {
             check(false, "\(target.name) loads", error.localizedDescription)
         }
     }
-    near(loaded[.jm1]?.magnitudeDB(at: 20) ?? -999, 4.538, 1e-9,
-         "JM-1 retains the downloaded Harman-filter variant")
-    near(loaded[.harmanIEM]?.magnitudeDB(at: 20) ?? -999, 7.61, 1e-9,
-         "Harman IEM retains the published bass rise")
-    if let neutral = loaded[.iefNeutral], let bass = loaded[.iefNeutralBass] {
-        check(bass.magnitudeDB(at: 20) > neutral.magnitudeDB(at: 20) + 5,
+    let neutral = BuiltInTarget.all.first { $0.id == "ief-neutral" }
+    let bass = BuiltInTarget.all.first { $0.id == "ief-neutral-bass" }
+    check(neutral != nil && bass != nil,
+          "the manifest keeps both IEF Neutral variants")
+    if let neutral, let bass, let neutralCurve = loaded[neutral], let bassCurve = loaded[bass] {
+        check(bassCurve.magnitudeDB(at: 20) > neutralCurve.magnitudeDB(at: 20) + 5,
               "IEF Neutral and bass variants remain distinct")
     }
     do {
-        _ = try BuiltInTarget.jm1.load(from: directory.appendingPathComponent("missing"))
-        check(false, "missing target returns an error instead of a fabricated curve")
+        if let any = BuiltInTarget.all.first {
+            _ = try any.load(from: directory.appendingPathComponent("missing"))
+            check(false, "missing target returns an error instead of a fabricated curve")
+        }
     } catch {
         check(true, "missing target returns an error instead of a fabricated curve")
     }
@@ -1382,6 +1390,60 @@ do {
     var output = [Float](repeating: 0, count: 32 * 2)
     proc.process(input: &input, inputChannels: 16, frames: 32, output: &output)
     check(proc.configuration == edited, "queued apply is adopted by the next processed block")
+}
+
+section("Averaged response")
+do {
+    let a = FrequencyResponse.parse(
+        "20 1\n100 2\n1000 3\n2000 2\n5000 1\n10000 0\n20000 -1\n30000 -2", name: "A")!
+    let b = FrequencyResponse.parse(
+        "20 3\n100 2\n1000 1\n2000 2\n5000 3\n10000 2\n20000 1\n30000 2", name: "B")!
+    let avg = FrequencyResponse.average([a, b], name: "Avg")!
+    near(avg.magnitudeDB(at: 20), 2.0, 0.01, "average is the pointwise dB mean at the edges")
+    near(avg.magnitudeDB(at: 1000), 2.0, 0.01, "interior points average too")
+    check(FrequencyResponse.average([], name: "none") == nil, "averaging nothing is nil")
+    check(FrequencyResponse.average([a], name: "one")! == a, "a single curve passes through")
+}
+
+section("AutoTune flattens toward the target")
+do {
+    // A measurement with a +6 dB bump at 1 kHz and a −5 dB dip at 200 Hz.
+    var lines: [String] = []
+    for i in 0..<48 {
+        let hz = 20.0 * pow(1000.0, Double(i) / 47)
+        var db = 0.0
+        if hz < 500 { db -= 5 * (1 - abs(log2(hz / 200)) / 2) }   // dip centred on 200 Hz
+        if hz >= 500 { db += 6 * exp(-pow(log2(hz / 1000), 2) * 8) } // bump centred on 1 kHz
+        lines.append("\(Int(hz.rounded())) \(String(format: "%.3f", db))")
+    }
+    let measured = FrequencyResponse.parse(lines.joined(separator: "\n"), name: "M")!
+    var flatLines: [String] = []
+    for i in 0..<48 {
+        let hz = 20.0 * pow(1000.0, Double(i) / 47)
+        flatLines.append("\(Int(hz.rounded())) 0")
+    }
+    let flat = FrequencyResponse.parse(flatLines.joined(separator: "\n"), name: "T")!
+
+    let bands = AutoTune.bands(matching: measured, to: flat, sampleRate: 48_000)
+    check(!bands.isEmpty, "a bumpy measurement gets bands")
+    check(bands.count <= 30, "no more than 30 bands", "\(bands.count)")
+    check(bands.allSatisfy { $0.kind == .peaking && $0.enabled }, "only peaking filters")
+
+    func worstDeviation(_ curve: FrequencyResponse, from target: FrequencyResponse) -> Double {
+        // Compared only where both curves are measured: outside the shared
+        // range the endpoint hold pits one curve's edge against the other.
+        curve.normalized().difference(from: target.normalized(),
+                                      low: 30, high: 1_500).map { abs($0.db) }.max() ?? 0
+    }
+    let before = worstDeviation(measured, from: flat)
+    let corrected = measured.corrected(
+        by: PEQProfile(preampDB: 0, filters: bands).cascade(sampleRate: 48_000),
+        sampleRate: 48_000)
+    let after = worstDeviation(FrequencyResponse(name: "", points: corrected), from: flat)
+    check(after < before, "the correction reduces worst deviation",
+          "before \(String(format: "%.2f", before)) after \(String(format: "%.2f", after))")
+    check(after < before * 0.5, "a simple bump is mostly flattened",
+          "after \(String(format: "%.2f", after)) dB")
 }
 
 print("\n\(checks - failures)/\(checks) checks passed")

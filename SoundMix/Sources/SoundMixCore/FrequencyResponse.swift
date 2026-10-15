@@ -205,6 +205,27 @@ public struct FrequencyResponse: Hashable, Codable, Sendable {
         return meanAbsDiff <= 15
     }
 
+    /// The dB mean of several curves, resampled onto one log grid over the range
+    /// they share. A single curve passes through unchanged, so callers can
+    /// average whatever ears they happen to have.
+    public static func average(_ curves: [FrequencyResponse], name: String,
+                                low: Double = 20, high: Double = 20_000,
+                                count: Int = 220) -> FrequencyResponse? {
+        let present = curves.filter { !$0.isEmpty }
+        guard let first = present.first else { return nil }
+        guard present.count > 1 else { return first }
+        // The intersection range: the endpoint-hold of magnitudeDB(at:) must
+        // not stretch one ear's data over the other's gap.
+        let lo = max(low, present.map { $0.range.low }.max() ?? low)
+        let hi = min(high, present.map { $0.range.high }.min() ?? high)
+        guard lo > 0, hi > lo else { return first }
+        return FrequencyResponse(name: name, points: (0..<count).map { i in
+            let hz = lo * pow(hi / lo, Double(i) / Double(count - 1))
+            let db = present.reduce(0.0) { $0 + $1.magnitudeDB(at: hz) } / Double(present.count)
+            return Point(hz: hz, db: db)
+        })
+    }
+
     /// The curve you will hear: the measurement plus everything the EQ does.
     public func corrected(by cascade: BiquadCascade, sampleRate: Double,
                           count: Int = 220) -> [Point] {

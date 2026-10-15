@@ -4,7 +4,8 @@ import SwiftUI
 enum ResponsePlotTraces {
     static func make(model: AppModel, rate: Double,
                      global: PEQProfile, speakers: (left: PEQProfile, right: PEQProfile),
-                     mode: AppModel.PlotMode, target: FrequencyResponse?) -> [ResponseCurve.Trace] {
+                     target: FrequencyResponse?) -> [ResponseCurve.Trace] {
+        /// One output's full EQ: the global PEQ plus that speaker's correction.
         func eqAsProfile(_ side: EQProfile.Side) -> PEQProfile {
             var p = global
             let speaker = side == .left ? speakers.left : speakers.right
@@ -12,13 +13,25 @@ enum ResponsePlotTraces {
             p.preampDB += speaker.preampDB
             return p
         }
-        guard model.hasMeasurement else {
+        /// The EQ as the averaged ear hears it: the dB mean of both per-ear
+        /// cascades. dB averaging commutes with the correction, so this is
+        /// exactly the EQ applied to the averaged measurement.
+        func averageEQPoints() -> [FrequencyResponse.Point] {
+            let left = eqAsProfile(.left).cascade(sampleRate: rate)
+            let right = eqAsProfile(.right).cascade(sampleRate: rate)
+            return ResponseCurve.grid.map {
+                .init(hz: $0, db: (left.magnitudeDB(at: $0, sampleRate: rate)
+                                   + right.magnitudeDB(at: $0, sampleRate: rate)) / 2
+                )
+            }
+        }
+
+        guard model.averageMeasurement != nil else {
             // Nothing measured: just show what the filters themselves do.
             var out: [ResponseCurve.Trace] = [
                 .fromProfile("Global", CZ.Color.blue, global, sampleRate: rate),
-                .fromProfile("Speaker L", CZ.Color.purple, speakers.left, sampleRate: rate),
-                .fromProfile("Speaker R", CZ.Color.pink, speakers.right,
-                             sampleRate: rate, dashed: true),
+                .init(label: "Speaker", color: CZ.Color.purple,
+                      points: averageEQPoints(), dashed: true),
             ]
             if let t = target {
                 out.insert(.init(label: "Target · \(t.name)", color: CZ.Color.red,
@@ -27,62 +40,26 @@ enum ResponsePlotTraces {
             return out
         }
 
-        let errorMode = target != nil && mode == .errorVsTarget
-        let reference = target?.normalized()
-
-        /// In error mode every curve is drawn as its distance from the target.
-        func shape(_ curve: FrequencyResponse) -> [FrequencyResponse.Point] {
-            guard errorMode, let reference else { return curve.normalized().sampled() }
-            return curve.normalized().difference(from: reference)
-        }
-
         var out: [ResponseCurve.Trace] = []
 
-        // The target itself: a shaped line in absolute mode, the zero line in error mode.
-        if let reference {
-            out.append(.init(label: errorMode
-                                ? "\(reference.name) — flattened to 0"
-                                : "Target · \(reference.name)",
-                             color: CZ.Color.red,
-                             points: errorMode
-                                ? ResponseCurve.grid.map { .init(hz: $0, db: 0) }
-                                : reference.sampled(),
-                             dashed: true))
+        if let reference = target?.normalized() {
+            out.append(.init(label: "Target · \(reference.name)", color: CZ.Color.red,
+                             points: reference.sampled(), dashed: true))
         }
 
+        // The result you will hear: each measured ear corrected by its own EQ,
+        // then averaged.
+        var corrected: [FrequencyResponse] = []
         for side in EQProfile.Side.allCases {
             guard let m = model.measurement(side) else { continue }
-            out.append(.init(label: "Measured \(side.short)",
-                             color: CZ.Color.lightGray,
-                             points: shape(m),
-                             dashed: side == .right))
+            corrected.append(FrequencyResponse(name: "",
+                points: m.corrected(by: eqAsProfile(side).cascade(sampleRate: rate),
+                                    sampleRate: rate)))
         }
-
-        for side in EQProfile.Side.allCases {
-            guard let m = model.measurement(side) else { continue }
-            let corrected = FrequencyResponse(
-                name: "", points: m.corrected(by: eqAsProfile(side).cascade(sampleRate: rate), sampleRate: rate))
-            out.append(.init(label: "Result \(side.short)",
-                             color: side == .left ? CZ.Color.purple : CZ.Color.pink,
-                             points: shape(corrected),
-                             dashed: side == .right,
-                             emphasised: true))
-        }
-
-        // The EQ curve is only meaningful on absolute axes.
-        if !errorMode {
-            let sameEQ = speakers.left == speakers.right
-            if sameEQ {
-                out.append(.fromProfile("EQ", CZ.Color.blue, eqAsProfile(.left),
-                                        sampleRate: rate, dashed: true))
-            } else {
-                out.append(.fromProfile("EQ L", CZ.Color.blue, eqAsProfile(.left),
-                                        sampleRate: rate, dashed: true))
-                out.append(.fromProfile("EQ R", CZ.Color.mediumBlue, eqAsProfile(.right),
-                                        sampleRate: rate, dashed: true))
-            }
+        if let result = FrequencyResponse.average(corrected, name: "Result") {
+            out.append(.init(label: "Result", color: CZ.Color.purple,
+                             points: result.normalized().sampled(), emphasised: true))
         }
         return out
     }
-
 }

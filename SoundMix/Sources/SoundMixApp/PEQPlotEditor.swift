@@ -43,20 +43,19 @@ struct PEQPlotEditor: View {
     @State private var selected: Int? = nil
     @State private var hiddenEQ: Set<String> = []
     @State private var hiddenPreview: Set<String> = []
-    @State private var mode: AppModel.PlotMode
     @State private var message: String?
     /// Target selection only changes this preview; it never alters the profile or audio.
     @State private var targetChoice = "profile"
     private static let bundledTargets: [BuiltInTarget: FrequencyResponse] = {
         guard let directory = BuiltInTarget.bundledDirectory() else { return [:] }
-        return Dictionary(uniqueKeysWithValues: BuiltInTarget.allCases.compactMap { target in
+        return Dictionary(uniqueKeysWithValues: BuiltInTarget.all.compactMap { target in
             guard let curve = try? target.load(from: directory) else { return nil }
             return (target, curve)
         })
     }()
     private var previewTarget: FrequencyResponse? {
         if targetChoice == "profile" { return model.target }
-        guard let target = BuiltInTarget(rawValue: targetChoice) else { return nil }
+        guard let target = BuiltInTarget.withID(targetChoice) else { return nil }
         return Self.bundledTargets[target]
     }
     private var canShowTargetError: Bool { previewTarget != nil && model.hasMeasurement }
@@ -78,7 +77,6 @@ struct PEQPlotEditor: View {
         let draft = PEQEditDraft(global: model.globalPEQText, speaker: model.speakerPEQText,
                                  swapsOutputs: model.swapOutputs)
         _draft = State(initialValue: draft)
-        _mode = State(initialValue: model.plotMode)
         _originalProfileID = State(initialValue: model.selectedProfileID)
         _gainExtent = State(initialValue: Self.extent(of: draft))
         _draftPeakBoostDB = State(initialValue: EQProfile(name: "", globalText: draft.globalText,
@@ -156,37 +154,25 @@ struct PEQPlotEditor: View {
                                       maxDragFrequency: maxFrequency, referenceLineDB: 0)
                             .disabled(!editable)
                         HStack {
-                            Text(mode == .errorVsTarget && canShowTargetError
-                                 ? "Draft result · deviation from target (dB)" : "Draft result · normalized response / EQ gain (dB)")
+                            Text("Draft result · normalized response / EQ gain (dB)")
                                 .font(.system(size: 14, weight: .medium))
                             Spacer()
-                            if canShowTargetError {
-                                Picker("View", selection: $mode) {
-                                    ForEach(AppModel.PlotMode.allCases) { Text($0.label).tag($0) }
-                                }.labelsHidden().frame(width: 200)
-                            }
                         }
                         HStack(spacing: 12) {
                             Picker("Target", selection: $targetChoice) {
                                 Text("Profile target").tag("profile")
                                 Text("None").tag("none")
-                                ForEach(BuiltInTarget.allCases) { Text($0.name).tag($0.rawValue) }
+                                ForEach(BuiltInTarget.all) { Text($0.name).tag($0.rawValue) }
                             }
                             .frame(maxWidth: 380)
                             .onChange(of: targetChoice) { _, _ in
                                 hiddenPreview.removeAll()
-                                // With no target there is nothing to measure
-                                // error against; leaving the stale mode would
-                                // keep the caption one selector ahead.
-                                if targetChoice == "none" && mode == .errorVsTarget {
-                                    mode = .absolute
-                                }
                             }
                             Text("Visual reference only · EQ unchanged")
                                 .font(.system(size: 12))
                                 .foregroundStyle(CZ.Color.mediumGray)
                         }
-                        if let chosen = BuiltInTarget(rawValue: targetChoice), Self.bundledTargets[chosen] == nil {
+                        if let chosen = BuiltInTarget.withID(targetChoice), Self.bundledTargets[chosen] == nil {
                             Text("The bundled target could not be loaded. Rebuild or reinstall the app.")
                                 .foregroundStyle(CZ.Color.red)
                         } else if previewTarget != nil && !model.hasMeasurement {
@@ -195,9 +181,8 @@ struct PEQPlotEditor: View {
                         }
                         ResponseCurve(traces: ResponsePlotTraces.make(model: model, rate: rate,
                                           global: draft.profile(.global),
-                                          speakers: (draft.profile(.left), draft.profile(.right)), mode: mode, target: previewTarget),
+                                          speakers: (draft.profile(.left), draft.profile(.right)), target: previewTarget),
                                       height: max(120, (geo.size.height - 350) * 0.4),
-                                      toleranceBandDB: canShowTargetError && mode == .errorVsTarget ? 3 : nil,
                                       hidden: $hiddenPreview)
                     }
                     inspector(listHeight: min(480, max(280, geo.size.height * 0.42)))
@@ -320,6 +305,9 @@ struct PEQPlotEditor: View {
                 Button("Delete", systemImage: "trash") {
                     if let selected { remove(selected) }
                 }.disabled(selectedFilter == nil)
+                Button("AutoTune", systemImage: "wand.and.rays") { runAutoTune() }
+                    .disabled(previewTarget == nil || model.averageMeasurement == nil)
+                    .help("Design up to 30 peaking bands that flatten the averaged measurement onto the chosen target, then write them into this stage as a draft. Reset restores what was there.")
             }
             numberField("Preamp (dB)", value: profile.preampDB, limits: -60...24) { value in
                 edit { var p = $0.profile(stage); p.preampDB = value; $0.setProfile(p, for: stage) }
@@ -459,7 +447,7 @@ struct PEQPlotEditor: View {
             TextField(title, value: Binding(get: { value }, set: { newValue in
                 guard newValue.isFinite else { return }
                 set(min(limits.upperBound, max(limits.lowerBound, newValue)))
-            }), format: .number.precision(.fractionLength(0...2)))
+            }), format: .number.precision(.fractionLength(0...3)))
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 100)
@@ -536,5 +524,28 @@ struct PEQPlotEditor: View {
     private func pushAudition() {
         guard auditionLive, editable else { return }
         model.auditionPEQDraft(draft)
+    }
+
+    /// One click from measurement to correction: design peaking bands against
+    /// the error between the chosen target and the averaged measurement, and
+    /// write them into the selected stage as an ordinary draft change — so
+    /// audition, the headroom readout, Apply and Reset all keep working.
+    private func runAutoTune() {
+        guard editable, let measurement = model.averageMeasurement,
+              let target = previewTarget else { return }
+        let bands = AutoTune.bands(matching: measurement, to: target,
+                                   sampleRate: rate, maxFrequency: maxFrequency)
+        guard !bands.isEmpty else {
+            message = "AutoTune found nothing worth correcting — the averaged measurement already tracks the target within 0.5 dB."
+            return
+        }
+        edit {
+            var p = $0.profile(stage)
+            // A complete correction of the raw measurement: replace, don't stack.
+            p.filters = bands
+            $0.setProfile(p, for: stage)
+        }
+        selected = nil
+        message = "AutoTune wrote \(bands.count) bands into \(stage.rawValue). Drag points to refine, then Apply. Reset restores the previous EQ."
     }
 }

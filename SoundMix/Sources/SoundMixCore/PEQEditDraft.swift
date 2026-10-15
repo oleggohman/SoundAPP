@@ -31,8 +31,15 @@ public struct PEQEditDraft {
     public func profile(_ stage: Stage) -> PEQProfile {
         stage == .global ? global.firstProfile : speaker.profile(forChannel: channel(stage))
     }
-    public mutating func setProfile(_ profile: PEQProfile, for stage: Stage) {
-        guard warnings.isEmpty, profile != self.profile(stage) else { return }
+    public mutating func setProfile(_ input: PEQProfile, for stage: Stage) {
+        guard warnings.isEmpty else { return }
+        // Drags, sliders and typed fields all land here; rebuilding each filter
+        // through `PEQFilter.init` clamps Fc, gain and Q to three decimals.
+        var profile = input
+        profile.filters = input.filters.map {
+            PEQFilter(enabled: $0.enabled, kind: $0.kind, frequency: $0.frequency, gainDB: $0.gainDB, q: $0.q)
+        }
+        guard profile != self.profile(stage) else { return }
         if stage == .global {
             global.channels[channel(stage)] = profile
             changedGlobal = true

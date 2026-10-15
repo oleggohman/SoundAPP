@@ -14,9 +14,18 @@ public struct PEQFilter: Hashable, Codable, Sendable {
     public init(enabled: Bool = true, kind: Kind = .peaking, frequency: Double, gainDB: Double, q: Double) {
         self.enabled = enabled
         self.kind = kind
-        self.frequency = frequency
-        self.gainDB = gainDB
-        self.q = q
+        self.frequency = Self.limited(frequency)
+        self.gainDB = Self.limited(gainDB)
+        self.q = Self.limited(q)
+    }
+
+    /// Fc, gain and Q never carry more than three decimals, whatever their
+    /// source — parsed text, a drag, a slider or AutoTune — so values stay
+    /// readable and serialize without long mantissas.
+    static func limited(_ value: Double) -> Double {
+        guard value.isFinite else { return value }
+        let rounded = (value * 1000).rounded() / 1000
+        return rounded == 0 ? 0 : rounded    // avoid "-0"
     }
 
     public func biquad(sampleRate: Double) -> Biquad {

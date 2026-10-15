@@ -64,21 +64,8 @@ final class AppModel: ObservableObject {
     /// The reference curve the correction aims at.
     @Published var target: FrequencyResponse?
     @Published var measurementError: String?
-    /// How the Response plot is drawn once a target is loaded.
-    @Published var plotMode: PlotMode = .errorVsTarget
     /// Curves the viewer has switched off in the Response plot.
     @Published var hiddenTraces: Set<String> = []
-
-    enum PlotMode: String, CaseIterable, Identifiable {
-        case absolute, errorVsTarget
-        var id: String { rawValue }
-        var label: String { self == .absolute ? "Normalized response" : "Error vs target" }
-        var explanation: String {
-            self == .absolute
-                ? "Measured, target and result on shared axes, levelled over 200 Hz – 2 kHz."
-                : "The target becomes a flat line and everything is drawn as deviation from it, so how close you are is read directly off the zero line."
-        }
-    }
 
     // Engine options
     @Published var framesPerBuffer: Int = 128
@@ -363,6 +350,15 @@ final class AppModel: ObservableObject {
                       configuration.foldPeakGainDB))
     }
 
+    /// The Output EQ editors' Apply: what you hear and what is saved are one
+    /// step — push the text to the engine, then persist it to the profile
+    /// library (creating a profile when none is selected).
+    func applyAndSavePEQ() {
+        reloadPEQWarnings()
+        applyLive()
+        saveSelectedProfile()
+    }
+
     /// Commit a graphical draft without applying unrelated device or matrix edits.
     func applyPEQDraft(_ draft: PEQEditDraft) -> Bool {
         guard draft.warnings.isEmpty,
@@ -390,7 +386,8 @@ final class AppModel: ObservableObject {
                                                          globalText: globalPEQText,
                                                          speakerText: speakerPEQText) }
         save()
-        append("Applied graphical PEQ edits.")
+        saveSelectedProfile()
+        append("Applied graphical PEQ edits and saved the profile.")
         return true
     }
 
@@ -735,6 +732,14 @@ final class AppModel: ObservableObject {
 
     var hasMeasurement: Bool { measurementLeft != nil || measurementRight != nil }
 
+    /// The single curve the Response plot and AutoTune work against: the dB mean
+    /// of whatever ears were measured ("AverageR"). The per-ear curves the
+    /// profile stores are untouched — this is a view over them.
+    var averageMeasurement: FrequencyResponse? {
+        FrequencyResponse.average([measurementLeft, measurementRight].compactMap { $0 },
+                                  name: "AverageR")
+    }
+
     func measurement(_ side: EQProfile.Side) -> FrequencyResponse? {
         side == .left ? measurementLeft : measurementRight
     }
@@ -809,6 +814,32 @@ final class AppModel: ObservableObject {
         append("Moved the curve to the \(other.label.lowercased()) ear.")
     }
 
+    /// The bundled reference curves, loaded once from the app's Targets folder.
+    /// An empty dictionary when the bundle folder is missing means the picker
+    /// offers no built-in models, which the log line below records.
+    static let bundledTargets: [BuiltInTarget: FrequencyResponse] = {
+        guard let directory = BuiltInTarget.bundledDirectory() else { return [:] }
+        var cache: [BuiltInTarget: FrequencyResponse] = [:]
+        for target in BuiltInTarget.all {
+            if let curve = try? target.load(from: directory) { cache[target] = curve }
+        }
+        return cache
+    }()
+
+    /// Load one of the bundled reference curves as the active target.
+    func loadBuiltInTarget(_ model: BuiltInTarget) {
+        guard let curve = Self.bundledTargets[model] else {
+            measurementError = "The bundled target “\(model.name)” could not be loaded."
+            return
+        }
+        target = curve
+        measurementError = nil
+        markProfileDirty()
+        let r = curve.range
+        append(String(format: "Loaded built-in target “%@” — %d points, %.0f Hz to %.0f Hz.",
+                      model.name, curve.points.count, r.low, r.high))
+    }
+
     /// Load a reference target — JM-1, a Harman variant, or a house curve.
     /// Nothing about the shape is assumed; it comes entirely from the file.
     func loadTarget() {
@@ -837,11 +868,8 @@ final class AppModel: ObservableObject {
     func clearTarget() {
         target = nil
         markProfileDirty()
+        append("Removed the target curve.")
     }
-
-    /// True only when there is both a target and something to measure
-    /// against it. The error view is meaningless otherwise.
-    var canShowErrorView: Bool { target != nil && hasMeasurement }
 
     /// Worst deviation of the corrected result from the target (or from its own
     /// mean when no target is loaded), across both ears.

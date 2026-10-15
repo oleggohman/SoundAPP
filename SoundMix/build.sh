@@ -39,6 +39,9 @@ echo "==> Preparing app icon"
 bash ./build-icon.sh
 
 echo "==> Compiling SoundMix $VERSION (build $BUILD_NUMBER)"
+# Start from a clean bundle: resource copies below merge, so files removed
+# from Resources/ would otherwise survive from the previous build.
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$MODCACHE"
 
 swiftc -O -swift-version 5 \
@@ -57,6 +60,12 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" "$APP/Contents/Info.plist"
+# The reference-target list follows the drop folder of curve files (default
+# ../Targets, override with SOUND_TARGETS_DIR). A missing folder keeps the
+# existing targets, so the build works on any machine.
+echo "==> Syncing reference targets"
+python3 Tools/sync_targets.py
+
 ditto Resources/Targets "$APP/Contents/Resources/Targets"
 cp -R Resources/SoundMix.help "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"

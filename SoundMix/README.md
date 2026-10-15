@@ -329,14 +329,19 @@ the audio thread.
 ## Offline target previews
 
 In the enlarged PEQ editor, the **Target** menu below **Draft result** offers the
-profile target, no target, JM-1 with Harman filters, Harman IEM 2019, IEF / Crinacle
-Neutral, and IEF / Crinacle Neutral with bass. Selection affects this preview only;
-it does not change filters, audio, or the saved profile target. With a measurement
-loaded, the View menu also offers error versus the selected target.
+profile target, no target, and the reference targets generated from the drop
+folder of curve files (JM-1 -10dB Tilt, PEQdB Diamond β, HiFiEndgame MKIII,
+Harman IE 2019, and the rest listed in `Resources/Targets/manifest.json`),
+plus IEF / Crinacle Neutral and IEF Neutral with bass from AutoEq. Selection
+affects this preview only; it does not change filters, audio, or the saved
+profile target. The result plot always shows the normalized response; there is
+no error-versus-target view.
 
 Target CSVs ship in `Resources/Targets` and are copied into the app and DMG, so no
-connection is required. Exact source revisions, URLs, checksums and MIT notices
-are included there. JM-1 is explicitly the Harman-filter variant from AutoEq.
+connection is required. `Tools/sync_targets.py` runs on every build and
+regenerates the list from the drop folder: add or remove a curve file there and
+rebuild, and the target menus follow. Provenance is recorded in
+`Resources/Targets/sources.json`.
 Use measurements and targets from compatible measurement systems; these reference
 curves do not convert between rigs.
 
