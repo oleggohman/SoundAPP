@@ -23,7 +23,6 @@ public enum CZ {
         public static let mutedGray   = SwiftUI.Color(hex: 0xCED0D9)
         public static let lightGray   = SwiftUI.Color(hex: 0xAAAEBD)
         public static let mediumGray  = SwiftUI.Color(hex: 0x666A80)
-        public static let darkMutedGray = SwiftUI.Color(hex: 0x909090)
 
         // Blue spectrum
         public static let paleBlue    = SwiftUI.Color(hex: 0xEEF2FB)
@@ -55,9 +54,6 @@ public enum CZ {
         public static let xl: CGFloat = 32
         public static let xxl: CGFloat = 40
         public static let xxxl: CGFloat = 48
-        public static let x4: CGFloat = 64
-        public static let x5: CGFloat = 80
-        public static let x6: CGFloat = 96
     }
 
     // MARK: Radius
@@ -66,7 +62,6 @@ public enum CZ {
         public static let tiny: CGFloat = 4
         public static let medium: CGFloat = 16
         public static let large: CGFloat = 20
-        public static let larger: CGFloat = 28
         public static let pill: CGFloat = 40
     }
 
@@ -76,8 +71,6 @@ public enum CZ {
         public static let instant = Animation.easeInOut(duration: 0.1)
         public static let quick   = Animation.easeInOut(duration: 0.15)
         public static let normal  = Animation.easeInOut(duration: 0.25)
-        public static let slow    = Animation.easeInOut(duration: 0.35)
-        public static let slowest = Animation.easeInOut(duration: 0.5)
     }
 
     // MARK: Typography

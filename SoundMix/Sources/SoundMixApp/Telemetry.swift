@@ -93,10 +93,10 @@ struct Telemetry: Codable {
             totalTrimDB: clean(config.totalTrimDB),
             chainLatencyMS: snap.latencyMS,
             ringUnderruns: snap.underruns,
-            captureCallbacks: model.engine.captureCallbacks,
-            captureFramesDelivered: model.engine.captureFramesDelivered,
-            captureRenderErrors: model.engine.captureRenderErrors,
-            lastCaptureError: Int(model.engine.lastCaptureError),
+            captureCallbacks: model.engine.captureCallbackCount,
+            captureFramesDelivered: model.engine.captureFramesDeliveredCount,
+            captureRenderErrors: model.engine.captureRenderErrorCount,
+            lastCaptureError: Int(model.engine.lastCaptureErrorCode),
             engineStarts: model.engine.startCount,
             gainReductionDB: snap.gainReductionDB,
             outputPeakLeftDB: clean(snap.outputPeakDB.0),
@@ -111,9 +111,17 @@ struct Telemetry: Codable {
     /// JSON cannot carry infinities; the meter floor stands in for silence.
     private static func clean(_ v: Double) -> Double { v.isFinite ? v : -200 }
 
+    /// Encode and write off the main thread: this runs twice a second while
+    /// rendering and involves real disk I/O.
+    private static let writerQueue = DispatchQueue(label: "io.soundmix.telemetry", qos: .utility)
+
     func write() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(self) { try? data.write(to: Self.url) }
+        let value = self
+        Self.writerQueue.async {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? encoder.encode(value) else { return }
+            try? data.write(to: Self.url)
+        }
     }
 }

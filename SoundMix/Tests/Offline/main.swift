@@ -365,6 +365,36 @@ for ppm in [-200.0, 200.0] {
     check((700...1200).contains(ring.framesAvailable), "clock bridge holds buffer occupancy")
 }
 
+section("Engine lifecycle without hardware")
+do {
+    // The realtime AUHAL path needs devices this suite does not have; what it
+    // can verify is that the engine object is safe to construct, reconfigure,
+    // and release when no stream was ever started.
+    let engine = SoundMixEngine()
+    check(engine.state == .stopped, "a fresh engine reports stopped")
+    check(engine.captureCallbackCount == 0 && engine.captureOversizeCount == 0,
+          "capture diagnostics start at zero")
+    var config = ProcessorConfiguration()
+    config.globalPEQ = PEQProfile(preampDB: 0, filters: [
+        PEQFilter(frequency: 100, gainDB: 2, q: 1)
+    ])
+    // A queued configuration is adopted when the next block is processed; the
+    // accessor must report what is actually rendering, not what is queued.
+    engine.apply(config)
+    check(engine.currentConfiguration != config,
+          "a queued configuration is not live until a block is processed")
+    var input = [Float](repeating: 0, count: 32 * 16)
+    var output = [Float](repeating: 0, count: 32 * 2)
+    engine.processor.process(input: &input, inputChannels: 16, frames: 32, output: &output)
+    check(engine.currentConfiguration == config,
+          "a processed block adopts the queued configuration")
+    engine.stop()
+    check(engine.state == .stopped, "stopping a never-started engine stays stopped")
+    engine.processor.reset()
+    check(engine.processor.configuration == config,
+          "reset keeps the configuration")
+}
+
 print("\n\(checks - failures)/\(checks) checks passed")
 if failures > 0 { print("\(failures) FAILED"); exit(1) }
 print("Offline rendering verified.")

@@ -119,13 +119,23 @@ private struct DeviceVolumeView: View {
                     .font(CZ.Typography.mono(12))
             }
             Slider(value: Binding(get: { volume.value ?? 0 }, set: { value in
-                do {
-                    try DeviceVolume.set(value, device: device.id, isInput: isInput, channels: channels)
-                    volume = DeviceVolume.read(device: device.id, isInput: isInput, channels: channels)
-                    error = nil
-                } catch {
-                    self.error = error.localizedDescription
-                    refresh()
+                dragging = true
+                let device = self.device, isInput = self.isInput, channels = self.channels
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try DeviceVolume.set(value, device: device.id, isInput: isInput, channels: channels)
+                        let state = DeviceVolume.read(device: device.id, isInput: isInput, channels: channels)
+                        DispatchQueue.main.async {
+                            volume = state
+                            error = nil
+                            dragging = false
+                        }
+                    } catch {
+                        DispatchQueue.main.async {
+                            self.error = error.localizedDescription
+                            dragging = false
+                        }
+                    }
                 }
             }), in: 0...1, onEditingChanged: { dragging = $0 })
                 .disabled(!volume.writable)
@@ -139,15 +149,17 @@ private struct DeviceVolumeView: View {
             if let error { CZAlert(kind: .error, message: error) }
         }
         .task {
+            // Core Audio property reads are synchronous IPC; keep them off the
+            // main thread so a slow device cannot stutter the interface.
             while !Task.isCancelled {
-                if !dragging { refresh() }
+                let device = self.device, isInput = self.isInput, channels = self.channels
+                let state = await Task.detached(priority: .utility) {
+                    DeviceVolume.read(device: device.id, isInput: isInput, channels: channels)
+                }.value
+                if !dragging { volume = state }
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { break }
             }
         }
-    }
-
-    private func refresh() {
-        volume = DeviceVolume.read(device: device.id, isInput: isInput, channels: channels)
     }
 }
 
@@ -366,10 +378,10 @@ struct SoundMixPanel: View {
                     let cascade = BiquadDesign.butterworthLowPass(
                         frequency: Double(model.lfeCutoffText) ?? 120,
                         order: model.lfeOrder,
-                        sampleRate: model.state.isRunning ? model.engine.currentSampleRate : 48_000)
-                    let tau = cascade.groupDelay(at: 0, sampleRate: model.state.isRunning ? model.engine.currentSampleRate : 48_000)
+                        sampleRate: model.plotSampleRate)
+                    let tau = cascade.groupDelay(at: 0, sampleRate: model.plotSampleRate)
                     Text(String(format: "Dry path delayed %.0f samples (%.2f ms) to match the filter.",
-                                tau, tau / (model.state.isRunning ? model.engine.currentSampleRate : 48_000) * 1000))
+                                tau, tau / (model.plotSampleRate) * 1000))
                         .font(CZ.Typography.caption)
                         .foregroundStyle(CZ.Color.mediumGray)
                 }
@@ -594,12 +606,16 @@ struct OutputEQPanel: View {
         panel.allowsOtherFileTypes = true
         panel.canChooseDirectories = false
         panel.message = "Choose a REW / Equalizer APO text file."
-        if panel.runModal() == .OK, let url = panel.url,
-           let text = try? String(contentsOf: url, encoding: .utf8) {
-            binding.wrappedValue = text
-            model.reloadPEQWarnings()
-            model.markProfileDirty()
-            model.applyLive()
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                binding.wrappedValue = text
+                model.reloadPEQWarnings()
+                model.markProfileDirty()
+                model.applyLive()
+            } catch {
+                model.errorMessage = "\(url.lastPathComponent) could not be read."
+            }
         }
     }
 }
@@ -860,7 +876,7 @@ private struct ResponseCard: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let rate = model.state.isRunning ? model.engine.currentSampleRate : 48_000
+        let rate = model.plotSampleRate
         let boost = model.editorPeakBoostDB
         CZCard(title: "Response",
                subtitle: !model.hasMeasurement
@@ -1047,19 +1063,21 @@ struct LogPanel: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(model.log.enumerated()), id: \.offset) { index, line in
-                            Text(line)
+                        ForEach(model.log) { line in
+                            Text(line.text)
                                 .font(CZ.Typography.mono(11))
                                 .foregroundStyle(CZ.Color.mediumGray)
                                 .textSelection(.enabled)
-                                .id(index)
+                                .id(line.id)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: 420)
                 .onChange(of: model.log.count) { _, count in
-                    withAnimation(CZ.Motion.quick) { proxy.scrollTo(count - 1, anchor: .bottom) }
+                    if let last = model.log.last {
+                        withAnimation(CZ.Motion.quick) { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
                 }
             }
             HStack {

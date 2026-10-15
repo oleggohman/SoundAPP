@@ -2,6 +2,7 @@ import Foundation
 import CoreAudio
 import AudioToolbox
 import AudioUnit
+import Synchronization
 
 public enum EngineError: LocalizedError {
     case deviceUnavailable(String)
@@ -75,16 +76,37 @@ public final class SoundMixEngine: @unchecked Sendable {
 
     /// Capture-side diagnostics. Without these a dead input path looks
     /// identical to silence, which is exactly what happened in testing.
-    public private(set) var captureCallbacks = 0
-    public private(set) var captureFramesDelivered = 0
-    public private(set) var captureRenderErrors = 0
-    public private(set) var lastCaptureError: OSStatus = 0
+    /// Written on the capture thread and read for telemetry, so they
+    /// accumulate atomically.
+    private let captureCallbacks = Atomic<Int>(0)
+    private let captureFramesDelivered = Atomic<Int>(0)
+    private let captureRenderErrors = Atomic<Int>(0)
+    private let lastCaptureError = Atomic<OSStatus>(0)
+    private let captureOversize = Atomic<Int>(0)
+    /// Set on the control thread before the units start; never touched again
+    /// while running, so a plain var is fine.
     public private(set) var startCount = 0
+
+    /// Thread-safe read accessors for telemetry.
+    public var captureCallbackCount: Int { captureCallbacks.load(ordering: .acquiring) }
+    public var captureFramesDeliveredCount: Int { captureFramesDelivered.load(ordering: .acquiring) }
+    public var captureRenderErrorCount: Int { captureRenderErrors.load(ordering: .acquiring) }
+    public var lastCaptureErrorCode: OSStatus { lastCaptureError.load(ordering: .acquiring) }
+    /// Capture slices larger than the allocated buffers, which are dropped
+    /// rather than rendered.
+    public var captureOversizeCount: Int { captureOversize.load(ordering: .acquiring) }
 
     private var inputDeviceID: AudioDeviceID = 0
     private var outputDeviceID: AudioDeviceID = 0
     private var aliveListeners: [(AudioDeviceID, AudioObjectPropertyListenerBlock)] = []
     private let listenerQueue = DispatchQueue(label: "io.soundmix.enginelisteners")
+
+    /// Device settings the engine changes while running, so `teardown()` can
+    /// put them back. They are system-global — other apps hear them too —
+    /// which is exactly why they must not outlive the session.
+    private var savedInputSampleRate: Double?
+    private var savedInputBufferFrames: UInt32?
+    private var savedOutputBufferFrames: UInt32?
 
     public init() {}
     deinit { stop() }
@@ -133,6 +155,14 @@ public final class SoundMixEngine: @unchecked Sendable {
         processor.apply(configuration)
     }
 
+    /// The configuration the processor is currently rendering. Exposed so the
+    /// interface does not need to reach through to the processor itself.
+    public var currentConfiguration: ProcessorConfiguration { processor.configuration }
+    /// The processing chain's latency in milliseconds, at the current settings.
+    public var chainLatencyMS: Double { processor.latencyMS }
+    /// The latest render snapshot: meters, clipping, underruns, latency.
+    public func snapshot() -> RenderSnapshot { processor.snapshot() }
+
     private func log(_ message: String) {
         DispatchQueue.main.async { self.onLog?(message) }
     }
@@ -174,6 +204,7 @@ public final class SoundMixEngine: @unchecked Sendable {
 
         let liveInputRate = AudioDeviceDirectory.nominalSampleRate(input.id)
         if abs(liveInputRate - sampleRate) > 0.5 {
+            savedInputSampleRate = liveInputRate
             _ = AudioDeviceDirectory.setNominalSampleRate(input.id, sampleRate)
             // Setting the rate is asynchronous in the HAL; confirm it landed
             // instead of assuming it did.
@@ -188,12 +219,18 @@ public final class SoundMixEngine: @unchecked Sendable {
                 throw EngineError.unsupported(
                     "“\(input.name)” stayed at \(Int(settled)) Hz and will not follow “\(output.name)” to \(Int(sampleRate)) Hz. Set both to the same rate in Audio MIDI Setup, or pick an output that already matches.")
             }
-            log("Moved “\(input.name)” to \(Int(sampleRate)) Hz to match “\(output.name)”.")
+            log("Moved “\(input.name)” to \(Int(sampleRate)) Hz to match “\(output.name)”; it will be put back on stop.")
         }
 
         let frames = max(32, min(options.framesPerBuffer, 4096))
-        setBufferFrameSize(input.id, frames)
-        setBufferFrameSize(output.id, frames)
+        savedInputBufferFrames = bufferFrameSize(input.id) ?? savedInputBufferFrames
+        savedOutputBufferFrames = bufferFrameSize(output.id) ?? savedOutputBufferFrames
+        if setBufferFrameSize(input.id, frames) != noErr {
+            log("“\(input.name)” kept its own buffer size; the engine adapts.")
+        }
+        if setBufferFrameSize(output.id, frames) != noErr {
+            log("“\(output.name)” kept its own buffer size; the engine adapts.")
+        }
         maxFrames = max(frames * 4, 2048)
 
         guard options.safetyBufferMS.isFinite, (0...2000).contains(options.safetyBufferMS) else {
@@ -216,10 +253,11 @@ public final class SoundMixEngine: @unchecked Sendable {
                               mData: UnsafeMutableRawPointer(captureStorage))
         captureList = list
 
-        captureCallbacks = 0
-        captureFramesDelivered = 0
-        captureRenderErrors = 0
-        lastCaptureError = 0
+        captureCallbacks.store(0, ordering: .relaxed)
+        captureFramesDelivered.store(0, ordering: .relaxed)
+        captureRenderErrors.store(0, ordering: .relaxed)
+        lastCaptureError.store(0, ordering: .relaxed)
+        captureOversize.store(0, ordering: .relaxed)
         startCount += 1
 
         processor.applyNow(configuration)
@@ -342,14 +380,46 @@ public final class SoundMixEngine: @unchecked Sendable {
             mReserved: 0)
     }
 
-    private func setBufferFrameSize(_ device: AudioDeviceID, _ frames: Int) {
+    private func setBufferFrameSize(_ device: AudioDeviceID, _ frames: Int) -> OSStatus {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyBufferFrameSize,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         var value = UInt32(frames)
-        AudioObjectSetPropertyData(device, &address, 0, nil,
-                                   UInt32(MemoryLayout<UInt32>.size), &value)
+        return AudioObjectSetPropertyData(device, &address, 0, nil,
+                                          UInt32(MemoryLayout<UInt32>.size), &value)
+    }
+
+    /// The device's current buffer frame size, or nil if it cannot be read.
+    private func bufferFrameSize(_ device: AudioDeviceID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
+
+    /// Put back the device settings the session changed. Best-effort: a device
+    /// that vanished cannot accept writes, and a refused restore is logged for
+    /// the user rather than failing the teardown it lives in.
+    private func restoreDeviceSettings() {
+        if let rate = savedInputSampleRate, inputDeviceID != 0 {
+            if AudioDeviceDirectory.setNominalSampleRate(inputDeviceID, rate) {
+                log("Restored input device to \(Int(rate)) Hz.")
+            }
+        }
+        if let frames = savedInputBufferFrames, inputDeviceID != 0 {
+            _ = setBufferFrameSize(inputDeviceID, Int(frames))
+        }
+        if let frames = savedOutputBufferFrames, outputDeviceID != 0 {
+            _ = setBufferFrameSize(outputDeviceID, Int(frames))
+        }
+        savedInputSampleRate = nil
+        savedInputBufferFrames = nil
+        savedOutputBufferFrames = nil
     }
 
     private func check(_ status: OSStatus, _ what: String) throws {
@@ -404,6 +474,7 @@ public final class SoundMixEngine: @unchecked Sendable {
         }
         inputUnit = nil
         outputUnit = nil
+        restoreDeviceSettings()
         if let list = captureList { free(list.unsafeMutablePointer) ; captureList = nil }
         captureStorage?.deallocate(); captureStorage = nil
         pullStorage?.deallocate(); pullStorage = nil
@@ -417,19 +488,22 @@ public final class SoundMixEngine: @unchecked Sendable {
                              timestamp: UnsafePointer<AudioTimeStamp>,
                              bus: UInt32, frames: UInt32) -> OSStatus {
         guard let unit = inputUnit, let list = captureList, let ring else { return noErr }
-        guard Int(frames) <= maxFrames else { return noErr }
+        guard Int(frames) <= maxFrames else {
+            captureOversize.wrappingAdd(1, ordering: .relaxed)
+            return noErr
+        }
 
-        captureCallbacks += 1
+        captureCallbacks.wrappingAdd(1, ordering: .relaxed)
         list[0].mDataByteSize = frames * UInt32(inputChannels * MemoryLayout<Float>.size)
         let status = AudioUnitRender(unit, flags, timestamp, bus, frames, list.unsafeMutablePointer)
         guard status == noErr, let data = list[0].mData else {
-            captureRenderErrors += 1
-            lastCaptureError = status
+            captureRenderErrors.wrappingAdd(1, ordering: .relaxed)
+            lastCaptureError.store(status, ordering: .relaxed)
             return status
         }
 
         ring.write(data.assumingMemoryBound(to: Float.self), frames: Int(frames))
-        captureFramesDelivered += Int(frames)
+        captureFramesDelivered.wrappingAdd(Int(frames), ordering: .relaxed)
         return noErr
     }
 

@@ -192,7 +192,8 @@ private struct SidebarSummary: View {
     }
 
     private func short(_ s: String) -> String {
-        s.contains("(") ? String(s[s.startIndex..<s.firstIndex(of: "(")!]).trimmingCharacters(in: .whitespaces) : s
+        guard let paren = s.firstIndex(of: "(") else { return s }
+        return String(s[s.startIndex..<paren]).trimmingCharacters(in: .whitespaces)
     }
 
     private func row(_ label: String, _ value: String) -> some View {

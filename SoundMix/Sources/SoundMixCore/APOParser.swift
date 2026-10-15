@@ -76,6 +76,14 @@ public enum APOParser {
         public func profile(forChannel index: Int) -> PEQProfile {
             channels[index] ?? channels[0] ?? .flat
         }
+        /// Per-ear speaker profiles: the physical-left speaker gets channel 0
+        /// unless the outputs are swapped, matching how the original launcher
+        /// flips the CH selection. One definition, so the editor's hot-apply
+        /// and the derived UI state can never drift apart.
+        public func speakerProfiles(swappingOutputs: Bool) -> (left: PEQProfile, right: PEQProfile) {
+            let a = profile(forChannel: 0), b = profile(forChannel: 1)
+            return swappingOutputs ? (b, a) : (a, b)
+        }
         /// First channel present, used for the `first` selector the CLI supports.
         public var firstProfile: PEQProfile {
             guard let key = channels.keys.sorted().first else { return .flat }

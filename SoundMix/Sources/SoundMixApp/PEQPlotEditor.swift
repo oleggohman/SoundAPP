@@ -91,7 +91,7 @@ struct PEQPlotEditor: View {
     }
 
     private var profile: PEQProfile { draft.profile(stage) }
-    private var rate: Double { model.state.isRunning ? model.engine.currentSampleRate : 48_000 }
+    private var rate: Double { model.plotSampleRate }
     private var maxFrequency: Double { min(20_000, rate * 0.49) }
     private var selectedFilter: PEQFilter? {
         guard let selected, profile.filters.indices.contains(selected) else { return nil }
@@ -173,7 +173,15 @@ struct PEQPlotEditor: View {
                                 ForEach(BuiltInTarget.allCases) { Text($0.name).tag($0.rawValue) }
                             }
                             .frame(maxWidth: 380)
-                            .onChange(of: targetChoice) { _, _ in hiddenPreview.removeAll() }
+                            .onChange(of: targetChoice) { _, _ in
+                                hiddenPreview.removeAll()
+                                // With no target there is nothing to measure
+                                // error against; leaving the stale mode would
+                                // keep the caption one selector ahead.
+                                if targetChoice == "none" && mode == .errorVsTarget {
+                                    mode = .absolute
+                                }
+                            }
                             Text("Visual reference only · EQ unchanged")
                                 .font(.system(size: 12))
                                 .foregroundStyle(CZ.Color.mediumGray)

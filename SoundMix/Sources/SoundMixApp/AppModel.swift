@@ -2,6 +2,13 @@ import SwiftUI
 import Combine
 import AppKit
 
+/// One line of the event log, with an identity that survives the 500-line
+/// sliding window: identifying rows by offset re-id'd every row on append.
+struct LogLine: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
 
@@ -62,7 +69,7 @@ final class AppModel: ObservableObject {
     /// Curves the viewer has switched off in the Response plot.
     @Published var hiddenTraces: Set<String> = []
 
-    enum PlotMode: String, CaseIterable, Codable, Identifiable {
+    enum PlotMode: String, CaseIterable, Identifiable {
         case absolute, errorVsTarget
         var id: String { rawValue }
         var label: String { self == .absolute ? "Normalized response" : "Error vs target" }
@@ -80,7 +87,7 @@ final class AppModel: ObservableObject {
     // Runtime
     @Published var state: EngineState = .stopped
     @Published var snapshot = RenderSnapshot()
-    @Published var log: [String] = []
+    @Published var log: [LogLine] = []
     @Published var errorMessage: String?
     @Published var micStatus: MicrophoneAccess.Status = MicrophoneAccess.status
 
@@ -169,11 +176,15 @@ final class AppModel: ObservableObject {
     }
 
     /// The bank the interface describes: built for the running device rate so
+    /// The sample rate plots and profile analysis should assume: the engine's
+    /// live rate when rendering, 48 kHz otherwise. One definition, because it
+    /// appeared nine times across the interface.
+    var plotSampleRate: Double { state.isRunning ? engine.currentSampleRate : 48_000 }
+
     /// the inter-aural delays shown are the ones actually being rendered.
     var displayedBank: HRIRBank? {
         guard foldIsBinaural else { return nil }
-        return HRIRBank.cached(profile: workingBinaural,
-                               sampleRate: state.isRunning ? engine.currentSampleRate : 48_000)
+        return HRIRBank.cached(profile: workingBinaural, sampleRate: plotSampleRate)
     }
 
     var globalProfile: PEQProfile {
@@ -182,11 +193,7 @@ final class AppModel: ObservableObject {
     }
     var speakerProfiles: (left: PEQProfile, right: PEQProfile) {
         guard !eqBypassed, !speakerPEQText.isEmpty else { return (.flat, .flat) }
-        let doc = APOParser.parse(speakerPEQText)
-        // The physical-left speaker gets channel 0 unless the outputs are swapped,
-        // matching how the original launcher flips the CH selection.
-        let a = doc.profile(forChannel: 0), b = doc.profile(forChannel: 1)
-        return swapOutputs ? (b, a) : (a, b)
+        return APOParser.parse(speakerPEQText).speakerProfiles(swappingOutputs: swapOutputs)
     }
 
     var configuration: ProcessorConfiguration {
@@ -210,7 +217,7 @@ final class AppModel: ObservableObject {
 
     var limiterStatus: String {
         guard state.isRunning else { return "Stopped" }
-        guard engine.processor.configuration.limiter.enabled else { return "Off" }
+        guard engine.currentConfiguration.limiter.enabled else { return "Off" }
         return snapshot.gainReductionDB > 0.05
             ? String(format: "−%.1f dB", snapshot.gainReductionDB) : "Ready · 0 dB"
     }
@@ -366,13 +373,13 @@ final class AppModel: ObservableObject {
         reloadPEQWarnings()
         markProfileDirty()
         if state.isRunning {
-            var config = engine.processor.configuration
+            var config = engine.currentConfiguration
             config.globalPEQ = globalProfile
-            let document = APOParser.parse(speakerPEQText)
-            let left = eqBypassed ? PEQProfile.flat : document.profile(forChannel: 0)
-            let right = eqBypassed ? PEQProfile.flat : document.profile(forChannel: 1)
-            config.speakerPEQLeft = config.swapOutputs ? right : left
-            config.speakerPEQRight = config.swapOutputs ? left : right
+            let speakers = eqBypassed || speakerPEQText.isEmpty
+                ? (PEQProfile.flat, PEQProfile.flat)
+                : APOParser.parse(speakerPEQText).speakerProfiles(swappingOutputs: swapOutputs)
+            config.speakerPEQLeft = speakers.0
+            config.speakerPEQRight = speakers.1
             engine.apply(config)
         }
         // The editor stays open and may keep auditioning: the committed EQ is
@@ -478,7 +485,7 @@ final class AppModel: ObservableObject {
         }
         a.current = a.current.stepped(toward: target)
         audition = a
-        var config = engine.processor.configuration
+        var config = engine.currentConfiguration
         config.globalPEQ = a.current.global
         config.speakerPEQLeft = a.current.left
         config.speakerPEQRight = a.current.right
@@ -542,7 +549,7 @@ final class AppModel: ObservableObject {
 
     private func append(_ line: String) {
         let stamp = Self.formatter.string(from: Date())
-        log.append("[\(stamp)] \(line)")
+        log.append(LogLine(text: "[\(stamp)] \(line)"))
         if log.count > 500 { log.removeFirst(log.count - 500) }
     }
 
@@ -556,14 +563,20 @@ final class AppModel: ObservableObject {
 
     private func startMeterTimer() {
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 guard self.state.isRunning else { return }
-                self.snapshot = self.engine.processor.snapshot()
+                self.snapshot = self.engine.snapshot()
                 self.telemetryTick += 1
                 if self.telemetryTick % 15 == 0 { Telemetry.capture(self).write() }
             }
         }
+    }
+
+    /// A released model must not leave its timers scheduled on the run loop.
+    deinit {
+        meterTimer?.invalidate()
+        auditionTimer?.invalidate()
     }
 
     /// Shown on the Speaker correction header while it is folded away.
@@ -586,7 +599,7 @@ final class AppModel: ObservableObject {
     /// costs. While the plot editor auditions a draft, that draft is what is
     /// being heard, so it is what this reports.
     var editorPeakBoostDB: Double {
-        let rate = state.isRunning ? engine.currentSampleRate : 48_000
+        let rate = plotSampleRate
         let text = auditionedPEQText
         let draft = EQProfile(name: "", globalText: text.global, speakerText: text.speaker)
         return draft.peakBoostDB(sampleRate: rate)
@@ -833,7 +846,7 @@ final class AppModel: ObservableObject {
     /// Worst deviation of the corrected result from the target (or from its own
     /// mean when no target is loaded), across both ears.
     func resultDeviationDB() -> Double? {
-        let rate = state.isRunning ? engine.currentSampleRate : 48_000
+        let rate = plotSampleRate
         var worst: Double?
         for side in EQProfile.Side.allCases {
             guard let m = measurement(side) else { continue }
@@ -875,7 +888,7 @@ final class AppModel: ObservableObject {
     /// added to that ear's measurement. Global PEQ hits both; the speaker
     /// correction differs per side.
     func combinedEQCascade(_ side: EQProfile.Side) -> BiquadCascade {
-        let rate = state.isRunning ? engine.currentSampleRate : 48_000
+        let rate = plotSampleRate
         let global = globalProfile.cascade(sampleRate: rate)
         let speaker = (side == .left ? speakerProfiles.left : speakerProfiles.right)
             .cascade(sampleRate: rate)
@@ -932,7 +945,10 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK else { return }
         var imported: [EQProfile] = []
         for url in panel.urls {
-            guard let data = try? Data(contentsOf: url) else { continue }
+            guard let data = try? Data(contentsOf: url) else {
+                errorMessage = "\(url.lastPathComponent) could not be read."
+                continue
+            }
             let base = url.deletingPathExtension().lastPathComponent
             do {
                 imported += try library.importData(data, fallbackName: base)
@@ -999,7 +1015,12 @@ final class AppModel: ObservableObject {
                        foldIsBinaural: foldIsBinaural, binauralName: binauralName,
                        headRadiusText: headRadiusText, bassCrossoverText: bassCrossoverText,
                        rearDampingText: rearDampingText, elevationCueText: elevationCueText)
-        if let data = try? JSONEncoder().encode(s) { try? data.write(to: Self.settingsURL) }
+        do {
+            let data = try JSONEncoder().encode(s)
+            try data.write(to: Self.settingsURL, options: .atomic)
+        } catch {
+            append("Settings could not be saved: \(error.localizedDescription)")
+        }
     }
 
     private func load() {

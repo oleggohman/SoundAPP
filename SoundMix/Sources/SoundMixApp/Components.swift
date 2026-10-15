@@ -104,7 +104,7 @@ struct CZDisclosureCard<Content: View>: View {
 
 // MARK: - Button
 
-enum CZButtonVariant { case primary, secondary, inverted, invertedTransparent, transparent, link, danger }
+enum CZButtonVariant { case primary, secondary, transparent, danger }
 enum CZButtonSize {
     case small, normal, large
     var minHeight: CGFloat { self == .small ? 24 : (self == .normal ? 38 : 50) }
@@ -118,7 +118,6 @@ struct CZButton: View {
     var icon: String? = nil
     var variant: CZButtonVariant = .primary
     var size: CZButtonSize = .normal
-    var fullWidth: Bool = false
     var isEnabled: Bool = true
     let action: () -> Void
 
@@ -129,20 +128,17 @@ struct CZButton: View {
         switch variant {
         case .primary:   return hovering ? CZ.Color.purple : CZ.Color.blue
         case .secondary: return hovering ? CZ.Color.lightBlue : CZ.Color.paleBlue
-        case .inverted:  return hovering ? CZ.Color.lightestBlue : CZ.Color.white
         case .danger:    return hovering ? CZ.Color.red.opacity(0.85) : CZ.Color.red
-        case .invertedTransparent, .transparent, .link: return .clear
+        case .transparent: return .clear
         }
     }
 
     private var foreground: Color {
         guard isEnabled else { return CZ.Color.white.opacity(0.85) }
         switch variant {
-        case .primary, .danger:    return CZ.Color.white
-        case .secondary, .inverted: return CZ.Color.darkBlue
-        case .invertedTransparent:  return CZ.Color.white
-        case .transparent:          return CZ.Color.darkBlue
-        case .link:                 return CZ.Color.purple
+        case .primary, .danger: return CZ.Color.white
+        case .secondary:        return CZ.Color.darkBlue
+        case .transparent:      return CZ.Color.darkBlue
         }
     }
 
@@ -152,17 +148,11 @@ struct CZButton: View {
                 if let icon { Image(systemName: icon).font(.system(size: size.font)) }
                 Text(title)
                     .font(CZ.Typography.ui(size.font, .semibold))
-                    .underline(variant == .link && hovering)
             }
             .foregroundStyle(foreground)
-            .padding(.horizontal, variant == .link ? 0 : size.hPadding)
-            .frame(maxWidth: fullWidth ? .infinity : nil)
+            .padding(.horizontal, size.hPadding)
             .frame(minHeight: size.minHeight)
             .background(background)
-            .overlay(
-                RoundedRectangle(cornerRadius: size.radius)
-                    .strokeBorder(variant == .invertedTransparent ? CZ.Color.white.opacity(0.35) : .clear,
-                                  lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: size.radius))
         }
         .buttonStyle(.plain)
