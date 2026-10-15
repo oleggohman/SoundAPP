@@ -16,6 +16,9 @@ SoundMix/build/
 
 # Agent-assistant config, not part of the app
 .agents/
+.claude/
+.codebuddy/
+skills-lock.json
 
 # Stray files from another project (SystemEQ-for-Mac), not part of SoundMix
 INTEGRATION_MANUAL.md
