@@ -167,7 +167,11 @@ editor. Use the green window control to return to a resizable window.
   means, discards edits since the last Apply and returns the audio to the EQ that
   was running before the editor opened.
 
-Use **Save** in the main profile library to keep the applied EQ in that profile.
+**Apply** also saves the profile: what you hear and what the library holds are
+one step. When no profile is selected, one is created from the name in the
+**Profile name** field. Every control named Apply — the editor's, the Output EQ
+cards' **Apply & save**, the transport bar's, and ⌘S — persists the profile the
+same way.
 Bypass is preserved. Speaker editing follows physical L/R routing, including swapped
 outputs. Edits preserve other channels, disabled filters, preamps and numeric
 precision. Edited documents are rewritten in supported APO syntax; their comments

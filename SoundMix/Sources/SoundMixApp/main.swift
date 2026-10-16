@@ -23,7 +23,9 @@ struct SoundMixApp: App {
                     .keyboardShortcut(".", modifiers: [.command])
                     .disabled(!model.state.isRunning)
                 Divider()
-                Button("Apply") { model.applyLive() }
+                // ⌘S is Save everywhere on macOS: it persists the profile too,
+                // not just the engine push.
+                Button("Apply") { model.applyAndSavePEQ() }
                     .keyboardShortcut("s", modifiers: [.command])
                     .disabled(!model.state.isRunning)
                 Divider()

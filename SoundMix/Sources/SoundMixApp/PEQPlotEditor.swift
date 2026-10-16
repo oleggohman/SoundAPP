@@ -221,7 +221,7 @@ struct PEQPlotEditor: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("PEQ plot editor").font(.system(size: 24, weight: .semibold))
-                Text("Edits are heard as you make them but stay a draft. Apply updates the current EQ; Save in the main window keeps it in your library.")
+                Text("Edits are heard as you make them but stay a draft. Apply updates the current EQ and saves the profile.")
                     .font(.system(size: 12))
             }
             Spacer()
@@ -497,7 +497,7 @@ struct PEQPlotEditor: View {
             return false
         }
         draft.acceptChanges()
-        message = "Applied. You can keep editing; Save in the main window saves the profile to the library."
+        message = "Applied and saved to the profile. You can keep editing; Apply saves again."
         return true
     }
 

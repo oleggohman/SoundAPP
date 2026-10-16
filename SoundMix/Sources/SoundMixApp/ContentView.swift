@@ -253,9 +253,13 @@ struct TransportBar: View {
                 }
                 Spacer()
                 if model.state.isRunning {
+                    // One Apply everywhere: the same thing the Output EQ card's
+                    // Apply & save does — the engine gets the settings and the
+                    // selected profile is persisted. A bar that only pushed to
+                    // the engine silently dropped the EQ profile.
                     CZButton(title: model.needsRestartToApply ? "Apply & restart" : "Apply",
                              icon: "arrow.triangle.2.circlepath",
-                             variant: .secondary) { model.applyLive() }
+                             variant: .secondary) { model.applyAndSavePEQ() }
                     CZButton(title: "Stop", icon: "stop.fill", variant: .danger) { model.stop() }
                 } else {
                     CZButton(title: "Start", icon: "play.fill", variant: .primary,

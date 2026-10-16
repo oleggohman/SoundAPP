@@ -14,3 +14,6 @@ Follow the Boost instructions in `/Users/oleggo/.codex/BOOST.md`.
 - Never move or overwrite an existing release tag. If it already identifies the
   same release commit, retain it; otherwise stop and report the conflict.
 - Report the DMG path and tag when finished. Do not push tags unless requested.
+
+## GENERAL
+- Add the current model name to commit message 

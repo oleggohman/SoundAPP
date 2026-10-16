@@ -80,7 +80,10 @@ final class AppModel: ObservableObject {
 
     let directory = AudioDeviceDirectory()
     let engine = SoundMixEngine()
-    let library = EQProfileLibrary()
+    /// The profile library is injectable so tests can point it at a scratch
+    /// directory. The default is the user's real Application Support folder —
+    /// a test that forgets to override it would otherwise write real profiles.
+    let library: EQProfileLibrary
     private var meterTimer: Timer?
 
     /// True while the plot editor is auditioning an uncommitted draft, so the
@@ -91,7 +94,8 @@ final class AppModel: ObservableObject {
     /// One rebuild per tick at most, however fast the mouse moves.
     static let auditionTickSeconds = 1.0 / 25
 
-    init() {
+    init(library: EQProfileLibrary = EQProfileLibrary()) {
+        self.library = library
         devices = directory.devices
         inputUID = devices.first(where: { $0.isDefaultInput && $0.hasInput })?.uid
             ?? devices.first(where: \.hasInput)?.uid ?? ""
@@ -353,6 +357,8 @@ final class AppModel: ObservableObject {
     /// The Output EQ editors' Apply: what you hear and what is saved are one
     /// step — push the text to the engine, then persist it to the profile
     /// library (creating a profile when none is selected).
+    /// The transport bar and ⌘S route here too, so any control named Apply
+    /// both sounds and saves.
     func applyAndSavePEQ() {
         reloadPEQWarnings()
         applyLive()
@@ -624,7 +630,10 @@ final class AppModel: ObservableObject {
 
     func newProfile() {
         do {
-            let name = uniqueNewName()
+            // The name someone typed into the card is the name they chose for
+            // the profile; falling back to "Untitled" silently discarded it.
+            let draftName = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = draftName.isEmpty ? uniqueNewName() : draftName
             let p = try library.save(EQProfile(name: name,
                                            globalText: globalPEQText,
                                            speakerText: speakerPEQText,
