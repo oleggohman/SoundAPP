@@ -76,9 +76,26 @@ The LFE channel (.1) is handled separately from ordinary bass managed by your sp
 - **Gain**: LFE is typically mixed +10dB higher than the main channels in a theatrical mix. SoundMix allows you to adjust the LFE gain explicitly.
 
 ### Headroom & Trim
-Combining multiple channels into two increases the overall signal level, which can cause digital clipping.
-- **Automatic Trim**: SoundMix calculates the worst-case peak gain of your chosen matrix and applies a negative trim to guarantee the output never clips, even if every input channel hits full scale simultaneously.
-- **Manual Gain**: If the automatic trim is too quiet (which is common for highly dynamic cinematic mixes), you can manually increase the gain. However, you rely on the True-Peak Limiter to catch transient overloads.
+Combining multiple channels into two increases the overall signal level, which can cause digital clipping. Collapsing a bed is not a copy: several channels are summed into the left output and several into the right, and amplitudes add. If enough of them carry signal at the same time, the sum goes past full scale and the output clips. How far past depends entirely on the matrix and the layout you chose, so it cannot be a fixed number.
+
+The original app answers this with a blunt −9.5 dB preamp, tuned for one matrix. Choose a different fold or a different layout and that constant is either leaving loudness on the table or still clipping. This card computes the trim from the fold you actually selected.
+
+**The two numbers.** Both are computed from the coefficients of the current fold, and shown in the card:
+
+- **Worst-case gain** is the sum of the absolute coefficients feeding the busier output (the L1 norm). It is the hard ceiling: if every mapped channel hit full scale at once, the output would be at most this. It cannot happen with real material, but nothing can exceed it.
+- **Uncorrelated gain** is the root-sum-square of the same coefficients (the L2 norm) — the realistic level change for normal, uncorrelated programme material, where channels are not perfectly in phase.
+
+**Automatic trim** chooses how to act on those:
+
+- **Manual only**: no automatic trim. You set the level yourself, exactly as the original app does with its −9.5 dB preamp. Nothing stops you clipping.
+- **Peak-safe (L1)**: trims by the worst-case figure, so the output cannot clip even if every mapped channel hits full scale simultaneously. The safest and the quietest.
+- **Power-preserving (L2)**: trims by the uncorrelated figure. Keeps perceived loudness close to the source for normal material; brief peaks are caught by the True-Peak Limiter.
+
+**Total applied** is the automatic trim plus your **Additional manual gain**. The breakdown line under it lists the whole picture, because the fold trim is not the only thing costing headroom: the global PEQ preamp and both speaker preamps sit in the same chain, and EQ filters add their own frequency-dependent boosts and cuts on top. Use **−1 dB** / **+1 dB** for small steps; they apply immediately during playback.
+
+If you set up an overload — a fold that adds gain, no automatic trim, and the limiter off — the card warns you with the level it can reach, which is the overload the original app has.
+
+**Headroom in binaural mode.** Peak-safe bounds a filter bank by the sum of its absolute taps, which is a far deeper cut than the same bound on a matrix, so it costs far too much level to be useful here. Power-preserving is the setting to use, with the limiter catching what is left.
 
 ---
 
