@@ -164,3 +164,26 @@ Collapsible sections: **Input device · Output device · Renderer settings · Ou
 18. **Stale-path bug acknowledged in its own source comment** — older builds saved an absolute renderer path in `~/.bed_renderer_web_launcher.json`, so a newer app could silently launch an older renderer.
 19. **Unsigned-ish / version 0.0.0**, `NSMicrophoneUsageDescription` is the only entitlement-adjacent key; no sandboxing.
 20. **PEQ is text-file only** — no curve display, no interactive editing, no verification that a filter set is stable.
+
+---
+
+## 7. peqdb.com/studio data format (2026-10)
+
+**Target:** `https://peqdb.com/studio/` — the measurement database behind the PEQdB brand/model picker in SoundMix's profile library.
+**Method:** static analysis of the studio page HTML and its bundled `index-*.js`.
+
+### Catalog index
+- The studio HTML inlines the whole catalog as `window.__INDEX__ = {…};` inside an inline script tag.
+- Shape: section IE/OE, then source, then MODEL NAME, then variant, then `[offset, channelCount]`.
+- 16 IE sources (Super Review, Timtuned, Precogvision, oratory1990 …), 9 OE sources; ~650 brands, ~7500 models, ~13.8k variants (2026-10 snapshot).
+- `channelCount` 2 = measured L/R pair (two consecutive records); 1 = single curve.
+
+### Curve blob
+- `https://peqdb.com/data/graph-data.bin?v=<epoch>` (~20 MB, 26 147 records).
+- Record = 776 bytes: little-endian Float32 `scale`, Float32 `offset`, then 384 Int16 samples.
+- Decoded level = `scale * sample - offset` dB, on a shared 384-point log grid, 20 Hz to 20 kHz.
+- Verified: SONY MH755 decodes to a plausible IEM curve (+9.7 dB bass shelf, -42 dB at 20 kHz).
+
+### Implementation
+- `SoundMix/Sources/SoundMixCore/PEQDBCatalog.swift` — fetch, disk cache (Application Support/SoundMix/PEQdB), parse, decode, search.
+- Studio page also embeds ~180 reference targets as inline CSV (`csv:` entries) — not needed for the picker; the bundled Targets folder already covers those.

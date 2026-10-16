@@ -628,23 +628,25 @@ final class AppModel: ObservableObject {
         append("Loaded EQ profile “\(profile.name)”.")
     }
 
+    /// New means new: a fresh profile named “New”, with no carried-over EQ
+    /// text, measurements or target. Everything the previous selection put in
+    /// the editors stays with the profile it came from.
     func newProfile() {
         do {
-            // The name someone typed into the card is the name they chose for
-            // the profile; falling back to "Untitled" silently discarded it.
-            let draftName = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            let name = draftName.isEmpty ? uniqueNewName() : draftName
-            let p = try library.save(EQProfile(name: name,
-                                           globalText: globalPEQText,
-                                           speakerText: speakerPEQText,
-                                           measurementLeft: measurementLeft,
-                                           measurementRight: measurementRight,
-                                           target: target))
+            let name = uniqueNewName()
+            let p = try library.save(EQProfile(name: name))
             refreshProfiles()
             selectedProfileID = p.id
             profileNameDraft = p.name
             profileNotesDraft = p.notes
+            globalPEQText = ""
+            speakerPEQText = ""
+            measurementLeft = nil
+            measurementRight = nil
+            target = nil
             profileDirty = false
+            reloadPEQWarnings()
+            applyLive()
             append("Created EQ profile “\(name)”.")
         } catch {
             errorMessage = error.localizedDescription
@@ -654,10 +656,10 @@ final class AppModel: ObservableObject {
 
     private func uniqueNewName() -> String {
         let existing = Set(profiles.map(\.name))
-        if !existing.contains("Untitled") { return "Untitled" }
+        if !existing.contains("New") { return "New" }
         var n = 2
-        while existing.contains("Untitled \(n)") { n += 1 }
-        return "Untitled \(n)"
+        while existing.contains("New \(n)") { n += 1 }
+        return "New \(n)"
     }
 
     func saveSelectedProfile() {
@@ -740,6 +742,63 @@ final class AppModel: ObservableObject {
     // MARK: Earphone measurement
 
     var hasMeasurement: Bool { measurementLeft != nil || measurementRight != nil }
+
+    // MARK: PEQdB catalog (earphone picker)
+
+    /// The PEQdB database behind the earphone picker: brands, models and the
+    /// measured curves. Loaded lazily on first use, then served from disk cache.
+    @Published private(set) var peqdbBrands: [PEQDBCatalog.Brand] = []
+    @Published private(set) var peqdbLoading = false
+    @Published private(set) var peqdbError: String?
+    private let peqdb = PEQDBCatalog.shared
+
+    /// Bring the catalog up once for the picker. A cached copy answers
+    /// immediately; `refresh` forces a re-fetch from peqdb.com.
+    func loadPEQDB(refresh: Bool = false) {
+        guard !peqdbLoading else { return }
+        peqdbLoading = true
+        peqdbError = nil
+        peqdb.load(refresh: refresh) { [weak self] result in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.peqdbLoading = false
+                switch result {
+                case .success:
+                    self.peqdbBrands = self.peqdb.brands
+                    self.append(String(format: "PEQdB catalog ready — %d brands, %d models.",
+                                       self.peqdbBrands.count,
+                                       self.peqdbBrands.reduce(0) { $0 + $1.models.count }))
+                case .failure(let error):
+                    self.peqdbError = error.localizedDescription
+                    self.append("PEQdB catalog failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Fill one or both ears from a picked PEQdB variant, replacing whatever the
+    /// profile had there. Same normalisation and dirty-marking as a file upload.
+    func applyPEQDBModel(_ model: PEQDBCatalog.Model,
+                         variant: PEQDBCatalog.Variant,
+                         into side: EQProfile.Side) {
+        let pair = peqdb.response(for: variant, model: model, into: side)
+        guard pair.left != nil || pair.right != nil else {
+            measurementError = "The PEQdB entry for “\(model.name)” could not be decoded."
+            return
+        }
+        measurementLeft = pair.left
+        measurementRight = pair.right
+        measurementError = nil
+        markProfileDirty()
+        let name = PEQDBCatalog.curveName(model: model, variant: variant, channel: 0)
+        if let l = pair.left, let r = pair.right {
+            append(String(format: "Loaded PEQdB pair “%@” — %d points per ear.", name, l.points.count))
+        } else {
+            append(String(format: "Loaded PEQdB %@ measurement “%@” — %d points.",
+                          side.label.lowercased(), name,
+                          (pair.left ?? pair.right)?.points.count ?? 0))
+        }
+    }
 
     /// The single curve the Response plot and AutoTune work against: the dB mean
     /// of whatever ears were measured ("AverageR"). The per-ear curves the

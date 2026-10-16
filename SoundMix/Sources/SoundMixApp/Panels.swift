@@ -768,6 +768,7 @@ private struct ProfileLibraryCard: View {
 private struct EarSlot: View {
     @EnvironmentObject var model: AppModel
     let side: EQProfile.Side
+    @State private var showingPEQDB = false
 
     var body: some View {
         let curve = model.measurement(side)
@@ -809,8 +810,130 @@ private struct EarSlot: View {
                          variant: .secondary, size: .small) {
                     model.loadMeasurement(for: side)
                 }
+                CZButton(title: "From PEQdB…", icon: "sparkles",
+                         variant: .secondary, size: .small) {
+                    showingPEQDB = true
+                }
             }
         }
+        .sheet(isPresented: $showingPEQDB) {
+            PEQDBPickerSheet(side: side)
+        }
+    }
+}
+
+/// Brand → model → variant picker over the PEQdB measurement database. Picks
+/// fill the ear the sheet was opened for; a two-channel (matched L/R) entry
+/// fills both, exactly like a three-column measurement file.
+private struct PEQDBPickerSheet: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let side: EQProfile.Side
+
+    @State private var query = ""
+    @State private var selectedModel: PEQDBCatalog.Model?
+    @State private var selectedVariant: PEQDBCatalog.Variant?
+
+    private var results: [PEQDBCatalog.Model] {
+        let catalog = PEQDBCatalog.shared
+        return model.peqdbBrands.isEmpty ? [] : catalog.searchModels(matching: query)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Choose earphone from PEQdB")
+                        .font(CZ.Typography.body(14, .semibold))
+                    Text("Search measured models — Super Review, Timtuned, oratory1990 and more. A matched pair fills both ears.")
+                        .font(CZ.Typography.caption)
+                        .foregroundStyle(CZ.Color.lightGray)
+                }
+                Spacer()
+                if model.peqdbLoading {
+                    ProgressView().controlSize(.small)
+                }
+                if model.peqdbBrands.isEmpty && !model.peqdbLoading {
+                    CZButton(title: "Reload", icon: "arrow.clockwise",
+                             variant: .secondary, size: .small) { model.loadPEQDB(refresh: true) }
+                }
+                CZButton(title: "Close", variant: .transparent, size: .small) { dismiss() }
+            }
+            .padding(CZ.Spacing.md)
+
+            if let error = model.peqdbError, model.peqdbBrands.isEmpty {
+                VStack(spacing: CZ.Spacing.sm) {
+                    Text(error)
+                        .font(CZ.Typography.caption)
+                        .foregroundStyle(CZ.Color.orange)
+                        .multilineTextAlignment(.center)
+                    CZButton(title: "Retry", icon: "arrow.clockwise",
+                             variant: .secondary, size: .small) { model.loadPEQDB(refresh: true) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                TextField("Search — type a model name, e.g. “Moondrop Chu”", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, CZ.Spacing.md)
+                    .padding(.bottom, CZ.Spacing.xs)
+
+                List(results, id: \.id) { candidate in
+                    Button {
+                        selectedModel = candidate
+                        selectedVariant = candidate.variants.first
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(candidate.name)
+                                    .font(CZ.Typography.body(13,
+                                        candidate.id == selectedModel?.id ? .semibold : .regular))
+                                Text("\(candidate.source) · \(candidate.variants.count) variant\(candidate.variants.count == 1 ? "" : "s")")
+                                    .font(CZ.Typography.caption)
+                                    .foregroundStyle(CZ.Color.lightGray)
+                            }
+                            Spacer()
+                            if candidate.id == selectedModel?.id {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(CZ.Color.blue)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.plain)
+
+                if let m = selectedModel {
+                    HStack(spacing: CZ.Spacing.sm) {
+                        if m.variants.count > 1 {
+                            Picker("Variant", selection: Binding(
+                                get: { selectedVariant ?? m.variants[0] },
+                                set: { selectedVariant = $0 })) {
+                                ForEach(m.variants) { v in
+                                    Text(v.name).tag(v)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 260)
+                        } else if let v = m.variants.first {
+                            Text(v.name).font(CZ.Typography.caption)
+                                .foregroundStyle(CZ.Color.lightGray)
+                        }
+                        Spacer()
+                        CZButton(title: "Load \(m.variants.count > 1 && (selectedVariant?.channelCount ?? 1) >= 2 ? "as L/R pair" : "into \(side.label.lowercased())")",
+                                 icon: "waveform.path.ecg", variant: .primary, size: .small) {
+                            if let v = selectedVariant {
+                                model.applyPEQDBModel(m, variant: v, into: side)
+                                dismiss()
+                            }
+                        }
+                    }
+                    .padding(CZ.Spacing.md)
+                }
+            }
+        }
+        .frame(minWidth: 560, minHeight: 460)
+        .onAppear { model.loadPEQDB() }
     }
 }
 

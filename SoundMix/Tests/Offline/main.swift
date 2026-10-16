@@ -395,6 +395,75 @@ do {
           "reset keeps the configuration")
 }
 
+// MARK: - PEQdB catalog
+
+section("PEQdB catalog")
+
+do {
+    // Synthetic blob in the site layout: Float32 scale, Float32 offset,
+    // 384 Int16 samples on the 20 Hz to 20 kHz log grid.
+    func rec(scale: Float, offset: Float, sample: Int16) -> Data {
+        var d = Data()
+        withUnsafeBytes(of: scale) { d.append(contentsOf: $0) }
+        withUnsafeBytes(of: offset) { d.append(contentsOf: $0) }
+        withUnsafeBytes(of: sample) { d.append(contentsOf: $0) }
+        for i in 1..<384 {
+            let s = i % 2 == 0 ? sample : Int16(-sample)
+            withUnsafeBytes(of: s) { d.append(contentsOf: $0) }
+        }
+        return d
+    }
+    var bin = rec(scale: 0.25, offset: 1.0, sample: 40)   // 0: L
+    bin.append(rec(scale: 0.25, offset: 1.0, sample: 40)) // 1: R pair
+    bin.append(rec(scale: 0.5, offset: 2.0, sample: -10)) // 2: single
+
+    let indexText = "{\"IE\":{\"Super Review\":{\"MOONDROP CHU\":{\"stock\":[0,2]}}},\"OE\":{\"Oratory1990\":{\"SENNHEISER HD600\":{\"\":[2,1]}}}}"
+    let cache = tmp.appendingPathComponent("peqdb-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+    try indexText.data(using: .utf8)!.write(to: cache.appendingPathComponent("catalog.json"))
+    try bin.write(to: cache.appendingPathComponent("graph-data.bin"))
+
+    let catalog = PEQDBCatalog(cacheDirectory: cache)
+    try catalog.loadCached()
+    check(catalog.isLoaded, "catalog loads from cache")
+    check(catalog.brands.count == 2, "two brands parsed", "got \(catalog.brands.count)")
+
+    let chu = catalog.brands.flatMap { $0.models }.first { $0.name == "MOONDROP CHU" }
+    check(chu != nil, "MOONDROP CHU present")
+    check(chu?.variants.first?.channelCount == 2, "CHU is a two-channel pair")
+
+    if let chu {
+        let pair = catalog.response(for: chu.variants[0], model: chu, into: .left)
+        check(pair.left != nil && pair.right != nil, "pair fills both ears")
+        check(pair.left?.points.count == 384, "384 points per curve")
+        check(pair.left!.points.allSatisfy { $0.db.isFinite }, "pair curve finite")
+
+        let mirrored = catalog.response(for: chu.variants[0], model: chu, into: .right)
+        check(mirrored.left != nil && mirrored.right != nil, "pair into either ear fills both")
+    }
+
+    let hd600 = catalog.brands.flatMap { $0.models }.first { $0.name == "SENNHEISER HD600" }
+    check(hd600?.variants.first?.name == "Standard", "unnamed variant becomes Standard")
+    if let hd600 {
+        let single = catalog.response(for: hd600.variants[0], model: hd600, into: .right)
+        check(single.right != nil && single.left == nil, "single-channel entry goes to chosen ear")
+    }
+
+    let hits = catalog.searchModels(matching: "chu")
+    check(hits.contains { $0.name == "MOONDROP CHU" }, "search finds CHU case-insensitively")
+
+    let page = "<script>window.__INDEX__ = " + indexText + ";</script>"
+    if let extracted = PEQDBIndexParser.extractIndex(html: page) {
+        let brands = try PEQDBIndexParser.parseCatalog(data: extracted)
+        check(brands.count == 2, "index extracted from studio HTML")
+    } else {
+        check(false, "index extracted from studio HTML")
+    }
+} catch {
+    failures += 1
+    print("  FAIL PEQdB catalog test block: \(error)")
+}
+
 print("\n\(checks - failures)/\(checks) checks passed")
 if failures > 0 { print("\(failures) FAILED"); exit(1) }
 print("Offline rendering verified.")
