@@ -25,6 +25,18 @@ and shares that project's device setup.
 - **To build from source**: a Swift 6 toolchain and the macOS SDK only — no
   Xcode project, no package manager, no network access.
 
+## Screenshots
+
+| Devices | Downmix |
+|---|---|
+| ![Devices panel](Screenshots/Devices.png) | ![Downmix panel](Screenshots/Downmix.png) |
+
+| Output EQ | PEQ editor |
+|---|---|
+| ![Output EQ](Screenshots/OutputEQ.png) | ![PEQ editor](Screenshots/PEQ_Editor.png) |
+
+![Monitor panel](Screenshots/Monitor.png)
+
 ## Features
 
 - **Downmix matrix** — four selectable recipes for folding the 16-channel bed
