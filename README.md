@@ -87,6 +87,14 @@ cd SoundMix
 Swift 6 toolchain and the macOS SDK are the only requirements — no Xcode project,
 no package manager, no network access required to build.
 
+## Releases
+
+Every verified DMG build is published as a GitHub release with the DMG attached.
+This is automated: `SoundMix/build-dmg.sh` tags the release commit, then (with
+`UPLOAD_RELEASE=1`) publishes `dist/SoundMix-<version>-build-<number>.dmg` to a
+matching GitHub release via `gh`. See
+[`RELEASING.md`](RELEASING.md) for the full step-by-step procedure.
+
 ## Thanks
 
 - [peqdb/macos](https://github.com/peqdb/macos) — for the original Downmix Renderer
